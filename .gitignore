@@ -1,0 +1,16 @@
+# Vidéos et GIF générés
+data/
+output/
+*.mkv
+
+# Base construite par l'indexation
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+.venv/
+__pycache__/
+
+# macOS
+.DS_Store
