@@ -22,11 +22,12 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from db import connect, rechercher
+from db import BASE_DEFAUT, chemin_video, connect, rechercher
 from search import FIN, GRAS, GRIS, tc
 
 POLICES = ["/System/Library/Fonts/Supplemental/Impact.ttf",
-           "/System/Library/Fonts/Supplemental/Arial Bold.ttf"]
+           "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+           "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]  # Linux (image Docker de l'API)
 MAX_LIGNES = 3
 DOSSIER_SORTIE = "output"
 ECHAP = b"\033"
@@ -80,7 +81,8 @@ def nom_par_defaut(r, texte):
     return f"L{r['livre']}E{r['numero']:03d}_{int(r['debut'])}s_{extrait or 'replique'}.gif"
 
 
-def exporter(fichier, debut, duree, calque, largeur, fps, sortie):
+def exporter(fichier, debut, duree, calque, largeur, fps, sortie, delai=None):
+    """Lance ffmpeg ; `delai` (secondes) l'interrompt avec subprocess.TimeoutExpired."""
     filtres = (
         f"[0:v]fps={fps},scale=iw*sar:ih,setsar=1,scale={largeur}:-2:flags=lanczos,setsar=1[video];"
         "[video][1:v]overlay=(W-w)/2:H-h-H*0.04,split[a][b];"
@@ -90,7 +92,7 @@ def exporter(fichier, debut, duree, calque, largeur, fps, sortie):
     subprocess.run(
         ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", str(debut), "-t", str(duree), "-i", fichier,
          "-i", calque, "-filter_complex", filtres, "-loop", "0", sortie],
-        check=True)
+        check=True, timeout=delai)
 
 
 def copier_presse_papier(chemin):
@@ -188,7 +190,7 @@ def main():
     ap.add_argument("--apres", type=float, default=0.4, help="Secondes gardées après la réplique (défaut : 0.4)")
     ap.add_argument("--largeur", type=int, default=480, help="Largeur du GIF en pixels (défaut : 480)")
     ap.add_argument("--fps", type=int, default=12, help="Images par seconde (défaut : 12)")
-    ap.add_argument("--db", default="kaamelott.db")
+    ap.add_argument("--db", default=str(BASE_DEFAUT))
     args = ap.parse_args()
 
     res = rechercher(connect(args.db), args.requete, max(args.n, args.resultat or 0))
@@ -212,8 +214,9 @@ def main():
     print(f"▶ {lignes[numero - 1]}")
 
     r = res[numero - 1]
-    if not Path(r["fichier"]).is_file():
-        sys.exit(f"Fichier introuvable : {r['fichier']}")
+    video = chemin_video(r["fichier"])
+    if not video.is_file():
+        sys.exit(f"Fichier introuvable : {video}")
     texte = args.texte or r["texte"]
     debut = max(0.0, r["debut"] - args.avant)
     duree = r["fin"] + args.apres - debut
@@ -224,7 +227,7 @@ def main():
         calque = str(Path(dossier) / "texte.png")
         dessiner_texte(texte, args.largeur, calque)
         try:
-            exporter(r["fichier"], debut, duree, calque, args.largeur, args.fps, str(sortie))
+            exporter(str(video), debut, duree, calque, args.largeur, args.fps, str(sortie))
         except subprocess.CalledProcessError:
             sys.exit("Échec de ffmpeg (message ci-dessus).")
     taille = sortie.stat().st_size / 1e6

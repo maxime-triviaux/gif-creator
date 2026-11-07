@@ -1,0 +1,7 @@
+# Contexte de build = racine du dépôt : n'envoyer que le code, jamais les vidéos ni la base
+*
+!api/app.py
+!api/requirements.txt
+!cli/db.py
+!cli/gif.py
+!cli/search.py

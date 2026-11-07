@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from db import connect
+from db import BASE_DEFAUT, chemin_stocke, connect
 
 # Pas d'initial_prompt : avec une liste de noms propres, Whisper perdait des répliques
 # entières (≈ 20 s sur « heat ») et inventait des lignes.
@@ -36,7 +36,9 @@ def analyser_nom(f, livre_dossier, rang):
     else:
         livre, numero, reste = livre_dossier, rang, f.stem
     titre = re.sub(r"^[\s\-_.]+", "", reste).replace("_", " ").strip() or None
-    return {"livre": livre, "numero": numero, "titre": titre, "fichier": str(f.resolve())}
+    # fichier : forme enregistrée en base (relative à data/) ; chemin : la vidéo à transcrire
+    return {"livre": livre, "numero": numero, "titre": titre,
+            "fichier": chemin_stocke(f), "chemin": str(f.resolve())}
 
 
 def lister_episodes(racine, livres=None):
@@ -113,7 +115,7 @@ def enregistrer(con, ep, segments, moteur):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dossier", help="Dossier contenant S01, S02, ...")
-    ap.add_argument("--db", default="kaamelott.db")
+    ap.add_argument("--db", default=str(BASE_DEFAUT))
     ap.add_argument("--backend", choices=["auto", "mlx", "faster"], default="auto")
     ap.add_argument("--modele", help="Modèle Whisper (défaut : large-v3-turbo)")
     ap.add_argument("--livre", type=int, action="append", help="Limiter à un Livre (répétable)")
@@ -149,7 +151,7 @@ def main():
         print(f"[{i}/{len(a_faire)}] {nom} … ", end="", flush=True)
         t = time.time()
         try:
-            n = enregistrer(con, ep, transcrire(ep["fichier"]), moteur)
+            n = enregistrer(con, ep, transcrire(ep["chemin"]), moteur)
         except KeyboardInterrupt:
             print("\nInterrompu. Relance la même commande pour reprendre.")
             return

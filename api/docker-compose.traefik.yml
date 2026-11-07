@@ -1,0 +1,19 @@
+# Publication en HTTPS par le Traefik du serveur (dépôt vps-ml-sirh, dossier traefik/).
+# S'ajoute à docker-compose.yml :
+#   docker compose -f api/docker-compose.yml -f api/docker-compose.traefik.yml up -d --build
+services:
+  api:
+    networks:
+      - public-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=public-net"
+      - "traefik.http.routers.kaamelott-gif.rule=Host(`${API_DOMAIN:?API_DOMAIN manquant (api/.env ou variables GitHub)}`)"
+      - "traefik.http.routers.kaamelott-gif.entrypoints=websecure"
+      - "traefik.http.routers.kaamelott-gif.tls=true"
+      - "traefik.http.routers.kaamelott-gif.tls.certresolver=myresolver"
+      - "traefik.http.services.kaamelott-gif.loadbalancer.server.port=8000"
+
+networks:
+  public-net:
+    external: true

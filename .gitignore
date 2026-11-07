@@ -8,6 +8,9 @@ output/
 *.db-wal
 *.db-shm
 
+# Configuration locale de l'API (contient la clé)
+.env
+
 # Python
 .venv/
 __pycache__/

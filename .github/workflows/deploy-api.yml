@@ -1,0 +1,131 @@
+name: Deploy API
+
+# Vérifie l'API à chaque pull request, et la déploie sur le VPS à chaque push sur main.
+# Même principe que le site (dépôt ml-sirh) : docker compose pilote le Docker du VPS par SSH,
+# l'image est construite sur le serveur et publiée par son Traefik.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "cli/db.py"
+      - "cli/gif.py"
+      - "cli/search.py"
+      - ".github/workflows/deploy-api.yml"
+  pull_request:
+    paths:
+      - "api/**"
+      - "cli/db.py"
+      - "cli/gif.py"
+      - "cli/search.py"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-api-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Valider les fichiers compose
+        env:
+          API_KEYS: verification:0123456789abcdef
+          HOST_DB_DIR: /tmp/db
+          HOST_MEDIA_DIR: /tmp/medias
+          API_DOMAIN: exemple.invalid
+        run: docker compose -f api/docker-compose.yml -f api/docker-compose.traefik.yml config --quiet
+
+      - name: Construire l'image
+        run: docker build -f api/Dockerfile -t kaamelott-gif-api:ci .
+
+      # Sans clé, ou avec une liste mal formée, l'API doit refuser de démarrer
+      - name: Tester le refus sans clé
+        run: |
+          if docker run --rm kaamelott-gif-api:ci; then echo "::error::L'API a démarré sans clé"; exit 1; fi
+          if docker run --rm -e API_KEYS=sans-separateur kaamelott-gif-api:ci; then echo "::error::L'API a démarré avec API_KEYS mal formé"; exit 1; fi
+          echo "Refus sans clé et avec une liste mal formée : OK"
+
+      # Base absente : l'API doit démarrer, exiger une clé connue et signaler la base manquante
+      - name: Tester le démarrage de l'API
+        run: |
+          CLE=$(openssl rand -hex 24)
+          docker run -d --name api-ci -p 8000:8000 -e API_KEYS="autre:$(openssl rand -hex 24),ci:$CLE" kaamelott-gif-api:ci
+          for i in $(seq 1 30); do curl -s -o /dev/null localhost:8000/docs && break; sleep 1; done
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code 'localhost:8000/repliques?q=graal')" = 401
+          test "$(code -H 'X-API-Key: inconnue' 'localhost:8000/repliques?q=graal')" = 401
+          test "$(code -H "X-API-Key: $CLE" 'localhost:8000/repliques?q=graal')" = 503
+          docker logs api-ci 2>&1 | grep -q 'ci : GET /repliques'
+          echo "Démarrage, clés, journal et erreur de base : OK"
+
+      - name: Logs du conteneur
+        if: failure()
+        run: docker logs api-ci
+
+  deployer:
+    needs: verifier
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      HOST_DB_DIR: ${{ vars.HOST_DB_DIR }}
+      HOST_MEDIA_DIR: ${{ vars.HOST_MEDIA_DIR }}
+      API_DOMAIN: ${{ vars.API_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurer SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<EOF
+          Host $VPS_HOST
+            User $VPS_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            BatchMode yes
+          EOF
+          ssh "$VPS_USER@$VPS_HOST" docker version --format '{{.Server.Version}}'
+
+      # Sans ces dossiers, Docker créerait des dossiers vides et l'API n'aurait ni base ni vidéos
+      - name: Vérifier la base et les vidéos sur le VPS
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" "test -f '$HOST_DB_DIR/kaamelott.db'" \
+            || { echo "::error::Base absente : $HOST_DB_DIR/kaamelott.db (voir api/README.md, étape 3)"; exit 1; }
+          ssh "$VPS_USER@$VPS_HOST" "test -d '$HOST_MEDIA_DIR/Kaamelott'" \
+            || { echo "::error::Vidéos absentes : $HOST_MEDIA_DIR/Kaamelott (voir api/README.md, étape 2)"; exit 1; }
+
+      - name: Déployer sur le VPS
+        env:
+          DOCKER_HOST: ssh://${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+          API_KEYS: ${{ secrets.API_KEYS }}
+          CACHE_MAX_MO: ${{ vars.CACHE_MAX_MO }}
+          MAX_FFMPEG: ${{ vars.MAX_FFMPEG }}
+        run: |
+          docker compose -f api/docker-compose.yml -f api/docker-compose.traefik.yml up -d --build --remove-orphans
+          docker image prune -f
+
+      # Avec la première clé de API_KEYS. Le premier déploiement attend aussi le certificat Let's Encrypt
+      - name: Vérifier l'API en ligne
+        env:
+          API_KEYS: ${{ secrets.API_KEYS }}
+        run: |
+          CLE=$(printf '%s' "$API_KEYS" | cut -d, -f1 | cut -d: -f2- | tr -d ' ')
+          echo "::add-mask::$CLE"
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $CLE" "https://$API_DOMAIN/repliques?q=graal&limit=1" || true)
+            [ "$code" = 200 ] && { echo "https://$API_DOMAIN répond"; exit 0; }
+            echo "Tentative $i : HTTP $code"; sleep 10
+          done
+          echo "::error::https://$API_DOMAIN ne répond pas 200"; exit 1

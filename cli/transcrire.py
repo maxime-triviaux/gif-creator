@@ -15,7 +15,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from db import connect
+from db import BASE_DEFAUT, connect
 from ingest import analyser_nom, creer_transcripteur, enregistrer, tri_naturel
 from search import tc
 
@@ -23,7 +23,7 @@ from search import tc
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("fichiers", nargs="*", type=Path, help="Fichiers à transcrire (défaut : *.mkv du dossier courant)")
-    ap.add_argument("--db", default="kaamelott.db")
+    ap.add_argument("--db", default=str(BASE_DEFAUT))
     ap.add_argument("--backend", choices=["auto", "mlx", "faster"], default="auto")
     ap.add_argument("--modele", help="Modèle Whisper (défaut : large-v3-turbo)")
     ap.add_argument("--livre", type=int, default=0, help="Livre si absent du nom de fichier (défaut : 0)")
@@ -53,7 +53,7 @@ def main():
     for ep in a_faire:
         print(f"Livre {ep['livre']} – ép. {ep['numero']} · {ep['titre']}")
         try:
-            segments = transcrire(ep["fichier"])
+            segments = transcrire(ep["chemin"])
             n = enregistrer(con, ep, segments, moteur)
         except KeyboardInterrupt:
             print("\nInterrompu. Relance la même commande pour reprendre.")

@@ -1,0 +1,29 @@
+# Nom fixe : le même projet (et le même volume de cache) que la commande soit lancée
+# depuis le poste, le serveur ou la CI
+name: kaamelott-gif
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    image: kaamelott-gif-api
+    restart: unless-stopped
+    environment:
+      # Une clé par personne : alice:cle1,bob:cle2
+      API_KEYS: ${API_KEYS:?API_KEYS manquant (api/.env ou secrets GitHub)}
+      CACHE_MAX_MO: ${CACHE_MAX_MO:-2000}
+      MAX_FFMPEG: ${MAX_FFMPEG:-2}
+    volumes:
+      # Le dossier de la base (pas le fichier seul) : une base remplacée par mv est bien vue
+      - "${HOST_DB_DIR:?HOST_DB_DIR manquant (api/.env ou variables GitHub)}:/data:ro"
+      # Équivalent du dossier data/ du poste : contient Kaamelott/S01, S02…
+      - "${HOST_MEDIA_DIR:?HOST_MEDIA_DIR manquant (api/.env ou variables GitHub)}:/media:ro"
+      - cache:/cache
+    ports:
+      # Sur le serveur, l'accès public passe par Traefik (docker-compose.traefik.yml) ;
+      # ce port reste limité à la machine elle-même
+      - "${BIND:-127.0.0.1}:${PORT:-8000}:8000"
+
+volumes:
+  cache:

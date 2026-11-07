@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from db import connect, rechercher
+from db import BASE_DEFAUT, chemin_video, connect, rechercher
 
 ROMAINS = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI"}
 GRIS, GRAS, FIN = "\033[90m", "\033[1m", "\033[0m"
@@ -34,13 +34,14 @@ def commande_lecteur(fichier, debut):
 
 
 def ouvrir(r):
-    if not Path(r["fichier"]).is_file():
-        sys.exit(f"Fichier introuvable : {r['fichier']}")
+    video = chemin_video(r["fichier"])
+    if not video.is_file():
+        sys.exit(f"Fichier introuvable : {video}")
     debut = max(0.0, r["debut"] - MARGE)
-    commande = commande_lecteur(r["fichier"], debut)
+    commande = commande_lecteur(str(video), debut)
     if commande is None:
         sys.exit("Aucun lecteur trouvé : installe VLC ou ffmpeg (ffplay).")
-    print(f"Ouverture à {tc(debut)} : {r['fichier']}")
+    print(f"Ouverture à {tc(debut)} : {video}")
     # Lecteur détaché : le terminal reste disponible et peut être fermé
     subprocess.Popen(commande, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
@@ -49,7 +50,7 @@ def ouvrir(r):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("requete")
-    ap.add_argument("--db", default="kaamelott.db")
+    ap.add_argument("--db", default=str(BASE_DEFAUT))
     ap.add_argument("-n", type=int, default=15)
     ap.add_argument("-o", "--ouvrir", type=int, metavar="N", help="Ouvre le résultat n° N dans le lecteur vidéo")
     args = ap.parse_args()

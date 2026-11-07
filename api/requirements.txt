@@ -1,0 +1,3 @@
+fastapi==0.162.1
+uvicorn==0.54.0
+pillow==13.0.0

@@ -55,8 +55,30 @@ END;
 """
 
 
-def connect(chemin="kaamelott.db"):
-    con = sqlite3.connect(Path(chemin).expanduser())
+# Fixé par rapport au projet, pas au dossier courant : les scripts se lancent de n'importe où
+DOSSIER_DATA = Path(__file__).resolve().parent.parent / "data"
+BASE_DEFAUT = DOSSIER_DATA / "kaamelott.db"
+
+
+def chemin_stocke(video):
+    """Chemin enregistré en base : relatif à data/ (« Kaamelott/S01/… ») quand la vidéo y est,
+    pour que la base reste valable si le projet ou les vidéos changent de machine ; absolu sinon."""
+    chemin = Path(video).resolve()
+    try:
+        return chemin.relative_to(DOSSIER_DATA).as_posix()
+    except ValueError:
+        return str(chemin)
+
+
+def chemin_video(fichier, racine=DOSSIER_DATA):
+    """Chemin réel d'une vidéo de la base. Un chemin absolu reste tel quel."""
+    return racine / fichier
+
+
+def connect(chemin=BASE_DEFAUT):
+    chemin = Path(chemin).expanduser()
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(chemin)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.execute("PRAGMA journal_mode = WAL")

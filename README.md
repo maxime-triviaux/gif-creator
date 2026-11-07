@@ -5,7 +5,7 @@ en GIF avec le texte incrusté.
 
 ## How to start
 
-Le dépôt ne contient que le code. Les vidéos, la base `kaamelott.db` et les GIF restent
+Le dépôt ne contient que le code. Les vidéos, la base `data/kaamelott.db` et les GIF restent
 en local : il faut fournir ses propres épisodes, puis construire la base.
 
 ### 1. Prérequis
@@ -52,14 +52,14 @@ vient du dossier et le numéro de l'ordre des fichiers.
 Teste d'abord sur 3 épisodes, depuis la racine du projet :
 
 ```bash
-python ingest.py data/Kaamelott --livre 1 --limite 3
+python cli/ingest.py data/Kaamelott --livre 1 --limite 3
 ```
 
 Le premier lancement télécharge le modèle Whisper (~1,5 Go). Le temps par épisode affiché
 permet d'estimer la durée totale. Lance ensuite toute la série :
 
 ```bash
-caffeinate -i python ingest.py data/Kaamelott
+caffeinate -i python cli/ingest.py data/Kaamelott
 ```
 
 - `caffeinate -i` empêche le Mac de se mettre en veille pendant la nuit.
@@ -70,18 +70,27 @@ caffeinate -i python ingest.py data/Kaamelott
 ### 5. Chercher et exporter
 
 ```bash
-python search.py "c'est pas faux"
-python gif.py "c'est pas faux"
+python cli/search.py "c'est pas faux"
+python cli/gif.py "c'est pas faux"
 ```
 
 Lance ces commandes depuis la racine du projet, avec l'environnement activé
-(`source .venv/bin/activate`) : la base `kaamelott.db` y est créée, et les GIF vont dans `output/`.
+(`source .venv/bin/activate`). Les scripts trouvent la base `data/kaamelott.db` d'où qu'ils
+soient lancés (`--db` pour en utiliser une autre), mais les GIF vont dans le dossier `output/`
+du dossier courant.
 
-## Transcrire les épisodes du dossier courant
+## Transcrire des épisodes isolés
 
 ```bash
-python transcrire.py                               # tous les .mkv du dossier courant
-python transcrire.py heat.mkv --livre 1 --numero 5
+python cli/transcrire.py chemin/vers/heat.mkv --livre 1 --numero 5
+```
+
+Lancé depuis un dossier de vidéos, sans fichier en argument, le script transcrit tous les `.mkv`
+de ce dossier, et les ajoute à la base du projet :
+
+```bash
+cd chemin/vers/videos
+~/workspaces/claude/gif-creator/.venv/bin/python ~/workspaces/claude/gif-creator/cli/transcrire.py
 ```
 
 Pas besoin de sous-dossiers `S01`, `S02`… Sans `SxxExx` dans le nom de fichier,
@@ -90,9 +99,9 @@ le Livre et le numéro viennent de `--livre` et `--numero` (défaut : Livre 0, �
 ## Recherche
 
 ```bash
-python search.py "cest pas faux"      # apostrophes, accents, majuscules ignorés
-python search.py "graal" -n 50
-python search.py "graal" -o 2         # ouvre le résultat n° 2 au bon moment
+python cli/search.py "cest pas faux"      # apostrophes, accents, majuscules ignorés
+python cli/search.py "graal" -n 50
+python cli/search.py "graal" -o 2         # ouvre le résultat n° 2 au bon moment
 ```
 
 `-o N` lance la vidéo dans VLC (ou `ffplay` si VLC n'est pas installé), 1 s avant la réplique.
@@ -103,9 +112,9 @@ Cherche d'abord la phrase exacte, sinon tous les mots dans n'importe quel ordre
 ## Export en GIF
 
 ```bash
-python gif.py "radis"                 # menu ↑/↓ + Entrée s'il y a plusieurs résultats (q ou Échap : annuler)
-python gif.py "radis" -r 2            # exporte directement le 2e résultat
-python gif.py "radis" --apres 1.5 --texte "Comme des radis !" -o radis.gif
+python cli/gif.py "radis"                 # menu ↑/↓ + Entrée s'il y a plusieurs résultats (q ou Échap : annuler)
+python cli/gif.py "radis" -r 2            # exporte directement le 2e résultat
+python cli/gif.py "radis" --apres 1.5 --texte "Comme des radis !" -o radis.gif
 ```
 
 Les GIF sont écrits dans le dossier `output/`, créé au besoin, puis copiés dans le
@@ -114,9 +123,16 @@ presse-papier : il suffit de les coller (Cmd-V) dans une conversation ou le Find
 Options utiles : `--avant` et `--apres` pour recaler le passage, `--largeur` et `--fps`
 pour alléger le fichier (défaut : 480 px, 12 images/s).
 
-## Ce qui est stocké (`kaamelott.db`)
+## API REST (Docker)
 
-- `episodes` : Livre, numéro, titre (tiré du nom de fichier `SxxExx - Titre.mkv`), chemin
+`api/` expose la recherche et l'export en GIF sous forme d'API, pour un serveur.
+Installation et déploiement : [api/README.md](api/README.md).
+
+## Ce qui est stocké (`data/kaamelott.db`)
+
+- `episodes` : Livre, numéro, titre (tiré du nom de fichier `SxxExx - Titre.mkv`), chemin de la
+  vidéo relatif à `data/` (`Kaamelott/S01/…`) : la base reste valable si le projet est déplacé.
+  Une vidéo transcrite hors de `data/` garde son chemin absolu.
 - `cues` : chaque réplique avec début/fin en secondes
 - `mots` : horodatage de chaque mot (pour caler les GIF au plus près)
 - `cues_fts` : index de recherche plein texte
