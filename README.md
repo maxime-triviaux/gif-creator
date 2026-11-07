@@ -130,7 +130,7 @@ Installation et déploiement : [api/README.md](api/README.md).
 
 ## Client à distribuer
 
-`client/kaamelott-gif.py` fait la même chose que `cli/gif.py`, mais en passant par l'API : ceux
+`client/kaamelott-gif-cli.py` fait la même chose que `cli/gif.py`, mais en passant par l'API : ceux
 qui l'utilisent n'ont besoin ni des vidéos ni de la base, juste de Python 3 et d'une clé dans un
 `.env`. Voir [client/README.md](client/README.md).
 

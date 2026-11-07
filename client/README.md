@@ -5,7 +5,7 @@ local. Un seul fichier, qui n'utilise que la bibliothèque standard de Python 3 
 
 ## Installation
 
-1. Récupère `kaamelott-gif.py` et `.env.example`, dans le même dossier.
+1. Récupère `kaamelott-gif-cli.py` et `.env.example`, dans le même dossier.
 2. Copie `.env.example` en `.env`, et mets-y la clé d'API qu'on t'a donnée :
 
    ```
@@ -24,10 +24,10 @@ personnelle, et chaque requête est enregistrée à ton nom.
 ## Utilisation
 
 ```bash
-python3 kaamelott-gif.py "c'est pas faux"            # menu ↑/↓ + Entrée s'il y a plusieurs résultats
-python3 kaamelott-gif.py "graal" -l                  # liste les résultats, sans export
-python3 kaamelott-gif.py "graal" -r 2                # exporte directement le 2e résultat
-python3 kaamelott-gif.py "radis" --apres 1.5 --texte "Comme des radis !" -o radis.gif
+python3 kaamelott-gif-cli.py "c'est pas faux"            # menu ↑/↓ + Entrée s'il y a plusieurs résultats
+python3 kaamelott-gif-cli.py "graal" -l                  # liste les résultats, sans export
+python3 kaamelott-gif-cli.py "graal" -r 2                # exporte directement le 2e résultat
+python3 kaamelott-gif-cli.py "radis" --apres 1.5 --texte "Comme des radis !" -o radis.gif
 ```
 
 Le GIF est écrit dans le dossier `output/` du dossier courant, puis copié dans le presse-papier
@@ -45,3 +45,38 @@ Le passage complet ne peut pas dépasser 15 s. Le premier export d'un passage pr
 secondes (le serveur le génère), les suivants sont immédiats.
 
 Sous Windows, le menu à flèches est remplacé par une liste numérotée.
+
+## Application de bureau
+
+`kaamelott-gif-app.py` affiche les résultats sous forme de grille de GIF animés. Elle utilise
+le même `.env`, et a besoin de `kaamelott-gif-cli.py` et `icon.png` dans le même dossier.
+
+Elle nécessite PySide6 (Qt), à installer une fois dans un environnement virtuel, depuis le
+dossier du client :
+
+```bash
+python3 -m venv .venv
+```
+```bash
+.venv/bin/pip install -r requirements-app.txt
+```
+
+Puis, pour la lancer :
+
+```bash
+.venv/bin/python kaamelott-gif-app.py
+```
+
+- Tape une réplique puis Entrée : jusqu'à 12 résultats s'affichent, en petits GIF de 240 px.
+  Ils sont générés 2 par 2, car le serveur n'en génère que 2 à la fois.
+- Survole un GIF : il se partage en deux moitiés. À gauche, l'icône **copier** met le GIF animé
+  dans le presse-papier ; à droite, l'icône **enregistrer** demande où l'écrire (Téléchargements
+  par défaut). Une coche confirme l'action.
+- Un clic ailleurs sur la vignette (le texte, l'épisode) copie aussi le GIF.
+- Le GIF copié ou enregistré fait 480 px de large, avec les réglages par défaut de la CLI.
+  Pour changer le texte ou le passage, utilise `kaamelott-gif-cli.py` (`--texte`, `--avant`,
+  `--apres`, `--largeur`).
+- Les GIF copiés restent un jour dans le cache de l'application, puis sont supprimés.
+
+Dans le Dock, l'application prend l'icône `icon.png` (un Graal, à remplacer par n'importe quelle
+image carrée). Lancée comme script, elle garde le nom « Python » dans la barre de menus de macOS.

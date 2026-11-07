@@ -2,10 +2,10 @@
 """Cherche une réplique de Kaamelott et l'exporte en GIF, via l'API (sans vidéos ni base en local).
 
 Usage :
-  python3 kaamelott-gif.py "c'est pas faux"              # menu ↑/↓ s'il y a plusieurs résultats
-  python3 kaamelott-gif.py "c'est pas faux" -r 2         # exporte directement le 2e résultat
-  python3 kaamelott-gif.py "graal" -l                    # liste les résultats, sans export
-  python3 kaamelott-gif.py "radis" --apres 1.5 --texte "Comme des radis !" -o radis.gif
+  python3 kaamelott-gif-cli.py "c'est pas faux"              # menu ↑/↓ s'il y a plusieurs résultats
+  python3 kaamelott-gif-cli.py "c'est pas faux" -r 2         # exporte directement le 2e résultat
+  python3 kaamelott-gif-cli.py "graal" -l                    # liste les résultats, sans export
+  python3 kaamelott-gif-cli.py "radis" --apres 1.5 --texte "Comme des radis !" -o radis.gif
 
 La clé d'API se lit dans la variable KAAMELOTT_API_KEY, ou dans un fichier .env placé dans le
 dossier courant ou à côté de ce script (voir .env.example).
