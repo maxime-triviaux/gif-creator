@@ -15,5 +15,8 @@ output/
 .venv/
 __pycache__/
 
+# Application de bureau construite par client/build-app.sh (contient la clé)
+client/dist/
+
 # macOS
 .DS_Store

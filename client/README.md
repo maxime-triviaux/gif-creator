@@ -80,3 +80,26 @@ Puis, pour la lancer :
 
 Dans le Dock, l'application prend l'icône `icon.png` (un Graal, à remplacer par n'importe quelle
 image carrée). Lancée comme script, elle garde le nom « Python » dans la barre de menus de macOS.
+
+### Installer l'application dans le Dock (macOS)
+
+`build-app.sh` construit une vraie application macOS, « Kaamelott GIF.app », avec son icône et son
+nom. Depuis la racine du dépôt, avec ta clé dans `client/.env` :
+
+```bash
+client/build-app.sh
+```
+```bash
+cp -R "client/dist/Kaamelott GIF.app" /Applications/
+```
+
+Lance-la depuis le dossier Applications, puis fais un clic droit sur son icône dans le Dock, et
+choisis **Options → Garder dans le Dock**.
+
+- Le script installe PySide6 et PyInstaller dans `client/.venv` s'ils manquent, et produit une
+  application d'environ 100 Mo (elle embarque Python et Qt).
+- **La clé de `client/.env` est copiée dans l'application.** Ne partage pas le `.app` : chacun
+  construit le sien avec sa clé. `client/dist/` est ignoré par Git.
+- Après un changement de clé ou de code, relance `build-app.sh` puis recopie l'application.
+- L'application n'est pas signée. Construite sur ton Mac, elle s'ouvre normalement ; copiée
+  depuis un autre Mac, macOS demande de l'ouvrir une première fois par clic droit → Ouvrir.
