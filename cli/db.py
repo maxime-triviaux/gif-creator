@@ -1,8 +1,9 @@
-"""Base SQLite de la bibliothèque Kaamelott : épisodes, répliques, index plein texte."""
+"""SQLite database of the Kaamelott library: episodes, cues (lines of dialogue), full-text index."""
 import re
 import sqlite3
 from pathlib import Path
 
+# Table and column names are part of the stored data (local base and the server's copy): keep them.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes(
   id            INTEGER PRIMARY KEY,
@@ -16,7 +17,7 @@ CREATE TABLE IF NOT EXISTS episodes(
 );
 CREATE INDEX IF NOT EXISTS episodes_ordre ON episodes(livre, numero);
 
--- Une "cue" = un segment de dialogue horodaté (≈ une phrase)
+-- A "cue" is a timestamped segment of dialogue (roughly one sentence)
 CREATE TABLE IF NOT EXISTS cues(
   id          INTEGER PRIMARY KEY,
   episode_id  INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
@@ -26,7 +27,7 @@ CREATE TABLE IF NOT EXISTS cues(
 );
 CREATE INDEX IF NOT EXISTS cues_ep ON cues(episode_id, debut);
 
--- Horodatage au mot près (pour caler les GIF finement)
+-- Word-level timestamps (to cut GIFs precisely)
 CREATE TABLE IF NOT EXISTS mots(
   cue_id  INTEGER NOT NULL REFERENCES cues(id) ON DELETE CASCADE,
   idx     INTEGER NOT NULL,
@@ -36,8 +37,8 @@ CREATE TABLE IF NOT EXISTS mots(
   PRIMARY KEY(cue_id, idx)
 );
 
--- Index plein texte : insensible à la casse, aux accents et aux apostrophes
--- ("cest pas faux" trouve "C'est pas faux !")
+-- Full-text index, insensitive to case, accents and apostrophes
+-- ("cest pas faux" finds "C'est pas faux !")
 CREATE VIRTUAL TABLE IF NOT EXISTS cues_fts USING fts5(
   norm, tokenize="unicode61 remove_diacritics 2"
 );
@@ -55,30 +56,30 @@ END;
 """
 
 
-# Fixé par rapport au projet, pas au dossier courant : les scripts se lancent de n'importe où
-DOSSIER_DATA = Path(__file__).resolve().parent.parent / "data"
-BASE_DEFAUT = DOSSIER_DATA / "kaamelott.db"
+# Anchored to the project, not the current directory: the scripts can be run from anywhere
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_DB = DATA_DIR / "kaamelott.db"
 
 
-def chemin_stocke(video):
-    """Chemin enregistré en base : relatif à data/ (« Kaamelott/S01/… ») quand la vidéo y est,
-    pour que la base reste valable si le projet ou les vidéos changent de machine ; absolu sinon."""
-    chemin = Path(video).resolve()
+def stored_path(video):
+    """Path saved in the database: relative to data/ ("Kaamelott/S01/…") when the video is there,
+    so the database stays valid if the project or the videos move to another machine; absolute otherwise."""
+    path = Path(video).resolve()
     try:
-        return chemin.relative_to(DOSSIER_DATA).as_posix()
+        return path.relative_to(DATA_DIR).as_posix()
     except ValueError:
-        return str(chemin)
+        return str(path)
 
 
-def chemin_video(fichier, racine=DOSSIER_DATA):
-    """Chemin réel d'une vidéo de la base. Un chemin absolu reste tel quel."""
-    return racine / fichier
+def video_path(stored, root=DATA_DIR):
+    """Actual path of a video from the database. An absolute path is returned unchanged."""
+    return root / stored
 
 
-def connect(chemin=BASE_DEFAUT):
-    chemin = Path(chemin).expanduser()
-    chemin.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(chemin)
+def connect(path=DEFAULT_DB):
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.execute("PRAGMA journal_mode = WAL")
@@ -86,23 +87,24 @@ def connect(chemin=BASE_DEFAUT):
     return con
 
 
-def _tokens(q):
-    return re.findall(r"\w+", q.lower().replace("'", "").replace("’", ""))
+def _tokens(query):
+    return re.findall(r"\w+", query.lower().replace("'", "").replace("’", ""))
 
 
-def rechercher(con, requete, limite=20, contexte=1):
-    """Cherche une réplique. Essaie d'abord la phrase exacte, puis tous les mots
-    dans n'importe quel ordre (le dernier en préfixe). Renvoie des dicts."""
-    toks = _tokens(requete)
-    if not toks:
+def search(con, query, limit=20, context=1):
+    """Search for a cue. Tries the exact phrase first, then all the words in any order
+    (the last one as a prefix). Returns dicts: the selected columns plus `before` and `after`,
+    the texts of the surrounding cues."""
+    tokens = _tokens(query)
+    if not tokens:
         return []
-    essais = [
-        '"' + " ".join(toks) + '"',                       # phrase exacte
-        " ".join(f'"{t}"' for t in toks[:-1]) + f' "{toks[-1]}"*',  # tous les mots
+    attempts = [
+        '"' + " ".join(tokens) + '"',                                      # exact phrase
+        " ".join(f'"{t}"' for t in tokens[:-1]) + f' "{tokens[-1]}"*',     # all the words
     ]
-    lignes = []
-    for fts in essais:
-        lignes = con.execute(
+    rows = []
+    for fts in attempts:
+        rows = con.execute(
             """SELECT c.id, c.episode_id, c.debut, c.fin, c.texte,
                       e.livre, e.numero, e.titre, e.fichier
                FROM cues_fts f
@@ -111,21 +113,21 @@ def rechercher(con, requete, limite=20, contexte=1):
                WHERE cues_fts MATCH ?
                ORDER BY bm25(cues_fts), e.livre, e.numero, c.debut
                LIMIT ?""",
-            (fts, limite),
+            (fts, limit),
         ).fetchall()
-        if lignes:
+        if rows:
             break
 
-    resultats = []
-    for r in lignes:
-        avant = con.execute(
+    results = []
+    for row in rows:
+        before = con.execute(
             "SELECT texte FROM cues WHERE episode_id=? AND debut<? ORDER BY debut DESC LIMIT ?",
-            (r["episode_id"], r["debut"], contexte)).fetchall()
-        apres = con.execute(
+            (row["episode_id"], row["debut"], context)).fetchall()
+        after = con.execute(
             "SELECT texte FROM cues WHERE episode_id=? AND debut>? ORDER BY debut LIMIT ?",
-            (r["episode_id"], r["debut"], contexte)).fetchall()
-        d = dict(r)
-        d["avant"] = [a["texte"] for a in reversed(avant)]
-        d["apres"] = [a["texte"] for a in apres]
-        resultats.append(d)
-    return resultats
+            (row["episode_id"], row["debut"], context)).fetchall()
+        result = dict(row)
+        result["before"] = [b["texte"] for b in reversed(before)]
+        result["after"] = [a["texte"] for a in after]
+        results.append(result)
+    return results

@@ -82,7 +82,7 @@ du dossier courant.
 ## Transcrire des épisodes isolés
 
 ```bash
-python cli/transcrire.py chemin/vers/heat.mkv --livre 1 --numero 5
+python cli/transcribe.py chemin/vers/heat.mkv --livre 1 --numero 5
 ```
 
 Lancé depuis un dossier de vidéos, sans fichier en argument, le script transcrit tous les `.mkv`
@@ -90,7 +90,7 @@ de ce dossier, et les ajoute à la base du projet :
 
 ```bash
 cd chemin/vers/videos
-~/workspaces/claude/gif-creator/.venv/bin/python ~/workspaces/claude/gif-creator/cli/transcrire.py
+~/workspaces/claude/gif-creator/.venv/bin/python ~/workspaces/claude/gif-creator/cli/transcribe.py
 ```
 
 Pas besoin de sous-dossiers `S01`, `S02`… Sans `SxxExx` dans le nom de fichier,
@@ -127,6 +127,12 @@ pour alléger le fichier (défaut : 480 px, 12 images/s).
 
 `api/` expose la recherche et l'export en GIF sous forme d'API, pour un serveur.
 Installation et déploiement : [api/README.md](api/README.md).
+
+## Client à distribuer
+
+`client/kaamelott-gif.py` fait la même chose que `cli/gif.py`, mais en passant par l'API : ceux
+qui l'utilisent n'ont besoin ni des vidéos ni de la base, juste de Python 3 et d'une clé dans un
+`.env`. Voir [client/README.md](client/README.md).
 
 ## Ce qui est stocké (`data/kaamelott.db`)
 

@@ -1,7 +1,8 @@
-"""API REST : recherche de répliques et export en GIF.
+"""REST API: cue search and GIF export.
 
-Réutilise la recherche (cli/db.py) et le rendu des GIF (cli/gif.py) des scripts en ligne de commande.
-La base est ouverte en lecture seule : l'indexation se fait ailleurs, avec cli/ingest.py.
+Reuses the search (cli/db.py) and the GIF rendering (cli/gif.py) of the command-line scripts.
+The database is opened read-only: indexing happens elsewhere, with cli/ingest.py.
+Routes, query parameters and JSON fields keep their French names: they are the public interface.
 """
 import contextlib
 import hashlib
@@ -23,90 +24,90 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyHeader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cli"))
-from db import chemin_video as chemin_dans, rechercher  # noqa: E402
-from gif import dessiner_texte, exporter, nom_par_defaut  # noqa: E402
+from db import search, video_path  # noqa: E402
+from gif import default_name, draw_caption, export_gif  # noqa: E402
 
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/kaamelott.db"))
-# Équivalent du dossier data/ du poste : la base y repère les vidéos par « Kaamelott/S01/… »
+# Equivalent of the workstation's data/ folder: the database locates videos as "Kaamelott/S01/…"
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/cache"))
-CACHE_MAX_OCTETS = int(os.environ.get("CACHE_MAX_MO", "2000")) * 1_000_000
+CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_MO", "2000")) * 1_000_000
 MAX_FFMPEG = int(os.environ.get("MAX_FFMPEG", "2"))
-# Une clé par personne : « alice:cle1,bob:cle2 ». Le nom apparaît dans le journal de chaque requête.
+# One key per person: "alice:key1,bob:key2". The name appears in the log of each request.
 API_KEYS = os.environ.get("API_KEYS", "")
 
-VERSION_RENDU = 1  # à incrémenter quand le rendu change : les anciens GIF du cache sont ignorés
-DUREE_MAX = 15.0   # secondes de vidéo par GIF
-ATTENTE_MAX = 30   # secondes d'attente d'une place libre pour ffmpeg
-DELAI_FFMPEG = 120
+RENDER_VERSION = 1    # bump when the rendering changes: older cached GIFs are then ignored
+MAX_DURATION = 15.0   # seconds of video per GIF
+MAX_WAIT = 30         # seconds to wait for a free ffmpeg slot
+FFMPEG_TIMEOUT = 120
 
-generations = threading.BoundedSemaphore(MAX_FFMPEG)
-verrous = [threading.Lock() for _ in range(64)]  # un même GIF n'est jamais généré deux fois en même temps
-cle_api = APIKeyHeader(name="X-API-Key", auto_error=False)
-# Enfant du logger d'uvicorn : les lignes sortent dans les logs du conteneur, au même format
-journal = logging.getLogger("uvicorn.error").getChild("acces")
-
-
-NOM_RE = re.compile(r"[A-Za-z0-9_.@-]{1,64}")
-cles = []  # (nom, clé), rempli au démarrage
+ffmpeg_slots = threading.BoundedSemaphore(MAX_FFMPEG)
+locks = [threading.Lock() for _ in range(64)]  # the same GIF is never rendered twice at the same time
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+# Child of uvicorn's logger: lines go to the container logs, in the same format
+log = logging.getLogger("uvicorn.error").getChild("acces")
 
 
-def lire_cles(valeur):
-    """Découpe « alice:cle1,bob:cle2 ». Les messages d'erreur ne citent jamais une clé."""
-    resultat = []
-    for i, entree in enumerate((e.strip() for e in valeur.split(",") if e.strip()), 1):
-        nom, separateur, cle = (morceau.strip() for morceau in entree.partition(":"))
-        if not separateur or not NOM_RE.fullmatch(nom):
+NAME_RE = re.compile(r"[A-Za-z0-9_.@-]{1,64}")
+keys = []  # (name, key), filled at startup
+
+
+def parse_keys(value):
+    """Splits "alice:key1,bob:key2". Error messages never quote a key."""
+    result = []
+    for i, entry in enumerate((e.strip() for e in value.split(",") if e.strip()), 1):
+        name, separator, key = (part.strip() for part in entry.partition(":"))
+        if not separator or not NAME_RE.fullmatch(name):
             raise ValueError(f"entrée n° {i} : format attendu nom:clé (nom en lettres, chiffres, _ . @ -)")
-        if len(cle) < 16:
-            raise ValueError(f"clé de {nom} trop courte (16 caractères au moins)")
-        resultat.append((nom, cle))
-    if not resultat:
+        if len(key) < 16:
+            raise ValueError(f"clé de {name} trop courte (16 caractères au moins)")
+        result.append((name, key))
+    if not result:
         raise ValueError("aucune clé")
-    if len({nom for nom, _ in resultat}) < len(resultat):
+    if len({name for name, _ in result}) < len(result):
         raise ValueError("un nom apparaît deux fois")
-    if len({cle for _, cle in resultat}) < len(resultat):
+    if len({key for _, key in result}) < len(result):
         raise ValueError("deux personnes ont la même clé")
-    return resultat
+    return result
 
 
-def proprietaire(cle):
-    trouve = None
-    for nom, attendue in cles:  # toutes comparées, en temps constant : rien ne fuite par la durée
-        if secrets.compare_digest(cle.encode(), attendue.encode()):
-            trouve = nom
-    return trouve
+def key_owner(key):
+    owner = None
+    for name, expected in keys:  # all compared, in constant time: nothing leaks through timing
+        if secrets.compare_digest(key.encode(), expected.encode()):
+            owner = name
+    return owner
 
 
-def verifier_cle(request: Request, cle: Annotated[str | None, Depends(cle_api)]):
-    cible = f"{request.method} {request.url.path}" + (f"?{request.url.query}" if request.url.query else "")
-    nom = proprietaire(cle) if cle else None
-    if nom is None:
-        journal.warning("clé %s refusée : %s", "absente" if not cle else "inconnue", cible)
+def check_key(request: Request, key: Annotated[str | None, Depends(api_key_header)]):
+    target = f"{request.method} {request.url.path}" + (f"?{request.url.query}" if request.url.query else "")
+    name = key_owner(key) if key else None
+    if name is None:
+        log.warning("clé %s refusée : %s", "absente" if not key else "inconnue", target)
         raise HTTPException(401, "Clé d'API absente ou invalide (en-tête X-API-Key).")
-    request.state.proprietaire = nom
-    journal.info("%s : %s", nom, cible)
+    request.state.owner = name
+    log.info("%s : %s", name, target)
 
 
 @contextlib.asynccontextmanager
-async def demarrage(_app):
+async def lifespan(_app):
     try:
-        cles[:] = lire_cles(API_KEYS)
+        keys[:] = parse_keys(API_KEYS)
     except ValueError as e:
         raise RuntimeError(f"Variable API_KEYS inutilisable ({e}) : l'API refuse de démarrer sans clé.")
-    journal.info("%d clé(s) : %s", len(cles), ", ".join(nom for nom, _ in cles))
+    log.info("%d clé(s) : %s", len(keys), ", ".join(name for name, _ in keys))
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    for reste in CACHE_DIR.glob("tmp*"):  # générations interrompues par un arrêt brutal
-        shutil.rmtree(reste, ignore_errors=True)
+    for leftover in CACHE_DIR.glob("tmp*"):  # renders interrupted by a hard stop
+        shutil.rmtree(leftover, ignore_errors=True)
     yield
 
 
-app = FastAPI(title="Kaamelott GIF", lifespan=demarrage, dependencies=[Depends(verifier_cle)])
+app = FastAPI(title="Kaamelott GIF", lifespan=lifespan, dependencies=[Depends(check_key)])
 
 
 @contextlib.contextmanager
-def ouvrir_db():
-    # Une connexion par requête : une base remplacée (mv) est vue dès la requête suivante
+def open_db():
+    # One connection per request: a replaced database (mv) is seen from the next request on
     try:
         con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
@@ -120,62 +121,62 @@ def ouvrir_db():
         con.close()
 
 
-def chemin_video(fichier):
-    """Retrouve dans MEDIA_DIR la vidéo d'un chemin de la base (relatif à data/ sur le poste)."""
-    relatif = Path(fichier)
-    if relatif.is_absolute():
-        raise HTTPException(500, f"Vidéo hors du dossier data/ du poste, introuvable sur le serveur : {fichier}")
-    chemin = chemin_dans(relatif, MEDIA_DIR).resolve()
-    if not chemin.is_relative_to(MEDIA_DIR.resolve()):
+def resolve_video(stored):
+    """Finds in MEDIA_DIR the video of a database path (relative to data/ on the workstation)."""
+    relative = Path(stored)
+    if relative.is_absolute():
+        raise HTTPException(500, f"Vidéo hors du dossier data/ du poste, introuvable sur le serveur : {stored}")
+    path = video_path(relative, MEDIA_DIR).resolve()
+    if not path.is_relative_to(MEDIA_DIR.resolve()):
         raise HTTPException(500, "Chemin de vidéo hors de MEDIA_DIR.")
-    if not chemin.is_file():
-        raise HTTPException(500, f"Vidéo introuvable dans MEDIA_DIR : {relatif}")
-    return relatif, chemin
+    if not path.is_file():
+        raise HTTPException(500, f"Vidéo introuvable dans MEDIA_DIR : {relative}")
+    return relative, path
 
 
-def nettoyer_cache():
-    """Supprime les GIF les moins récemment servis quand le cache dépasse sa taille maximale."""
+def prune_cache():
+    """Deletes the least recently served GIFs when the cache exceeds its maximum size."""
     gifs = []
     for f in CACHE_DIR.glob("*.gif"):
         with contextlib.suppress(FileNotFoundError):
             st = f.stat()
             gifs.append((st.st_mtime, st.st_size, f))
-    total = sum(taille for _, taille, _ in gifs)
-    for _, taille, f in sorted(gifs):
-        if total <= CACHE_MAX_OCTETS * 0.9:
+    total = sum(size for _, size, _ in gifs)
+    for _, size, f in sorted(gifs):
+        if total <= CACHE_MAX_BYTES * 0.9:
             break
         f.unlink(missing_ok=True)
-        total -= taille
+        total -= size
 
 
-def generer(fichier_cache, video, debut, duree, texte, largeur, fps):
-    if not generations.acquire(timeout=ATTENTE_MAX):
+def render(cache_file, video, start, duration, text, width, fps):
+    if not ffmpeg_slots.acquire(timeout=MAX_WAIT):
         raise HTTPException(503, "Trop de GIF en cours de génération, réessaie dans un instant.",
                             headers={"Retry-After": "10"})
     try:
-        # Rendu dans un dossier temporaire du cache, puis renommage : jamais de GIF incomplet servi
+        # Rendered in a temporary folder of the cache, then renamed: a partial GIF is never served
         with tempfile.TemporaryDirectory(dir=CACHE_DIR) as tmp:
-            calque, sortie = Path(tmp) / "texte.png", Path(tmp) / "rendu.gif"
-            dessiner_texte(texte, largeur, str(calque))
-            exporter(str(video), debut, duree, str(calque), largeur, fps, str(sortie), delai=DELAI_FFMPEG)
-            os.replace(sortie, fichier_cache)
+            overlay, output = Path(tmp) / "caption.png", Path(tmp) / "render.gif"
+            draw_caption(text, width, str(overlay))
+            export_gif(str(video), start, duration, str(overlay), width, fps, str(output), timeout=FFMPEG_TIMEOUT)
+            os.replace(output, cache_file)
     except subprocess.TimeoutExpired:
         raise HTTPException(504, "Génération du GIF trop longue.")
     except subprocess.CalledProcessError:
         raise HTTPException(500, "Échec de ffmpeg (voir les logs du conteneur).")
     finally:
-        generations.release()
-    nettoyer_cache()
+        ffmpeg_slots.release()
+    prune_cache()
 
 
 @app.get("/repliques")
-def chercher_repliques(
+def search_quotes(
     q: Annotated[str, Query(min_length=1, max_length=200, description="Réplique à chercher")],
     limit: Annotated[int, Query(ge=1, le=50)] = 15,
 ):
     """Cherche la phrase exacte, sinon tous les mots dans n'importe quel ordre."""
-    with ouvrir_db() as con:
-        resultats = rechercher(con, q, limit)
+    with open_db() as con:
+        results = search(con, q, limit)
     return [{
         "id": r["id"],
         "livre": r["livre"],
@@ -184,25 +185,28 @@ def chercher_repliques(
         "debut": r["debut"],
         "fin": r["fin"],
         "texte": r["texte"],
-        "avant": r["avant"],
-        "apres": r["apres"],
-        "gif": app.url_path_for("gif_replique", cue_id=r["id"]),
-    } for r in resultats]
+        "avant": r["before"],
+        "apres": r["after"],
+        "gif": app.url_path_for("quote_gif", cue_id=r["id"]),
+    } for r in results]
 
 
-@app.get("/repliques/{cue_id}/gif", name="gif_replique",
+@app.get("/repliques/{cue_id}/gif", name="quote_gif",
          responses={200: {"content": {"image/gif": {}}}, 304: {"description": "GIF inchangé"}})
-def gif_replique(
+def quote_gif(
     cue_id: int,
     request: Request,
-    texte: Annotated[str | None, Query(max_length=200, description="Remplace le texte transcrit")] = None,
-    avant: Annotated[float, Query(ge=0, le=5, description="Secondes gardées avant la réplique")] = 0.2,
-    apres: Annotated[float, Query(ge=0, le=5, description="Secondes gardées après la réplique")] = 0.4,
-    largeur: Annotated[int, Query(ge=160, le=720)] = 480,
+    text: Annotated[str | None, Query(alias="texte", max_length=200,
+                                      description="Remplace le texte transcrit")] = None,
+    before: Annotated[float, Query(alias="avant", ge=0, le=5,
+                                   description="Secondes gardées avant la réplique")] = 0.2,
+    after: Annotated[float, Query(alias="apres", ge=0, le=5,
+                                  description="Secondes gardées après la réplique")] = 0.4,
+    width: Annotated[int, Query(alias="largeur", ge=160, le=720)] = 480,
     fps: Annotated[int, Query(ge=5, le=20)] = 12,
 ):
     """Génère le GIF d'une réplique (id renvoyé par /repliques), ou le ressert depuis le cache."""
-    with ouvrir_db() as con:
+    with open_db() as con:
         r = con.execute(
             """SELECT c.debut, c.fin, c.texte, e.livre, e.numero, e.fichier
                FROM cues c JOIN episodes e ON e.id = c.episode_id WHERE c.id = ?""",
@@ -210,37 +214,37 @@ def gif_replique(
         if r is None:
             raise HTTPException(404, f"Pas de réplique n° {cue_id} (les numéros changent si un épisode "
                                      "est re-transcrit : refais la recherche).")
-        relatif, video = chemin_video(r["fichier"])
+        relative, video = resolve_video(r["fichier"])
 
-    texte = (texte or "").strip() or r["texte"]
-    avant, apres = round(avant, 1), round(apres, 1)  # 0.2 et 0.20 donnent le même GIF en cache
-    debut = round(max(0.0, r["debut"] - avant), 3)
-    duree = round(r["fin"] + apres - debut, 3)
-    if duree > DUREE_MAX:
-        raise HTTPException(422, f"Passage trop long ({duree:.1f} s, maximum {DUREE_MAX:.0f} s).")
+    text = (text or "").strip() or r["texte"]
+    before, after = round(before, 1), round(after, 1)  # 0.2 and 0.20 give the same cached GIF
+    start = round(max(0.0, r["debut"] - before), 3)
+    duration = round(r["fin"] + after - start, 3)
+    if duration > MAX_DURATION:
+        raise HTTPException(422, f"Passage trop long ({duration:.1f} s, maximum {MAX_DURATION:.0f} s).")
 
-    # La clé décrit l'image elle-même : elle reste valable même si les numéros de réplique changent
-    description = [VERSION_RENDU, str(relatif), debut, duree, texte, largeur, fps]
-    cle = hashlib.sha256(json.dumps(description, ensure_ascii=False).encode()).hexdigest()[:32]
-    entetes = {"ETag": f'"{cle}"', "Cache-Control": "private, max-age=86400"}
-    if request.headers.get("if-none-match") == entetes["ETag"]:
-        return Response(status_code=304, headers=entetes)
+    # The key describes the image itself: it stays valid even if cue ids change
+    description = [RENDER_VERSION, str(relative), start, duration, text, width, fps]
+    key = hashlib.sha256(json.dumps(description, ensure_ascii=False).encode()).hexdigest()[:32]
+    headers = {"ETag": f'"{key}"', "Cache-Control": "private, max-age=86400"}
+    if request.headers.get("if-none-match") == headers["ETag"]:
+        return Response(status_code=304, headers=headers)
 
-    fichier_cache = CACHE_DIR / f"{cle}.gif"
-    for _ in range(2):  # deuxième tour si le nettoyage du cache a supprimé le GIF entre-temps
-        if not fichier_cache.is_file():
-            with verrous[int(cle[:8], 16) % len(verrous)]:
-                if not fichier_cache.is_file():
-                    generer(fichier_cache, video, debut, duree, texte, largeur, fps)
+    cache_file = CACHE_DIR / f"{key}.gif"
+    for _ in range(2):  # second round if pruning deleted the GIF in the meantime
+        if not cache_file.is_file():
+            with locks[int(key[:8], 16) % len(locks)]:
+                if not cache_file.is_file():
+                    render(cache_file, video, start, duration, text, width, fps)
         try:
-            contenu = fichier_cache.read_bytes()  # lu en mémoire : le nettoyage ne peut plus casser la réponse
+            content = cache_file.read_bytes()  # read into memory: pruning can no longer break the response
         except FileNotFoundError:
             continue
         with contextlib.suppress(FileNotFoundError):
-            os.utime(fichier_cache)  # marque le GIF comme récemment servi
+            os.utime(cache_file)  # marks the GIF as recently served
         break
     else:
         raise HTTPException(503, "Cache saturé, réessaie dans un instant.", headers={"Retry-After": "10"})
-    nom = nom_par_defaut({"livre": r["livre"], "numero": r["numero"], "debut": r["debut"]}, texte)
-    entetes["Content-Disposition"] = f'inline; filename="{nom}"'
-    return Response(contenu, media_type="image/gif", headers=entetes)
+    name = default_name({"livre": r["livre"], "numero": r["numero"], "debut": r["debut"]}, text)
+    headers["Content-Disposition"] = f'inline; filename="{name}"'
+    return Response(content, media_type="image/gif", headers=headers)

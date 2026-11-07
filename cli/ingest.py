@@ -2,9 +2,9 @@
 """Transcrit les épisodes de Kaamelott avec Whisper et remplit la base SQLite.
 
 Usage :
-  python ingest.py ~/Videos/Kaamelott                  # tout (reprend où ça s'est arrêté)
-  python ingest.py ~/Videos/Kaamelott --livre 1 --limite 3   # test rapide
-  python ingest.py ~/Videos/Kaamelott --refaire        # re-transcrit même ce qui est déjà fait
+  python cli/ingest.py data/Kaamelott                         # tout (reprend où ça s'est arrêté)
+  python cli/ingest.py data/Kaamelott --livre 1 --limite 3    # test rapide
+  python cli/ingest.py data/Kaamelott --refaire               # re-transcrit même ce qui est déjà fait
 
 Le dossier doit contenir des sous-dossiers S01, S02, ... avec les .mkv dedans.
 """
@@ -16,57 +16,58 @@ import sys
 import time
 from pathlib import Path
 
-from db import BASE_DEFAUT, chemin_stocke, connect
+from db import DEFAULT_DB, connect, stored_path
 
-# Pas d'initial_prompt : avec une liste de noms propres, Whisper perdait des répliques
-# entières (≈ 20 s sur « heat ») et inventait des lignes.
-# Pas non plus de hallucination_silence_threshold : à 2 s, il supprimait de vraies répliques.
+# No initial_prompt: with a list of proper names, Whisper dropped whole lines
+# (about 20 s on "heat") and made some up.
+# No hallucination_silence_threshold either: at 2 s, it removed real lines.
 
-EP_RE = re.compile(r"S(\d{1,2})\s*[E.x]\s*(\d{1,3})", re.I)
-
-
-def tri_naturel(p):
-    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", p.name)]
+EPISODE_RE = re.compile(r"S(\d{1,2})\s*[E.x]\s*(\d{1,3})", re.I)
 
 
-def analyser_nom(f, livre_dossier, rang):
-    m = EP_RE.search(f.stem)
+def natural_key(path):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", path.name)]
+
+
+def parse_name(path, folder_book, rank):
+    """Book, number and title of an episode, from `SxxExx` in the file name, otherwise from the folder and rank."""
+    m = EPISODE_RE.search(path.stem)
     if m:
-        livre, numero, reste = int(m[1]), int(m[2]), f.stem[m.end():]
+        book, number, rest = int(m[1]), int(m[2]), path.stem[m.end():]
     else:
-        livre, numero, reste = livre_dossier, rang, f.stem
-    titre = re.sub(r"^[\s\-_.]+", "", reste).replace("_", " ").strip() or None
-    # fichier : forme enregistrée en base (relative à data/) ; chemin : la vidéo à transcrire
-    return {"livre": livre, "numero": numero, "titre": titre,
-            "fichier": chemin_stocke(f), "chemin": str(f.resolve())}
+        book, number, rest = folder_book, rank, path.stem
+    title = re.sub(r"^[\s\-_.]+", "", rest).replace("_", " ").strip() or None
+    # stored: the form saved in the database (relative to data/); path: the video to transcribe
+    return {"book": book, "number": number, "title": title,
+            "stored": stored_path(path), "path": str(path.resolve())}
 
 
-def lister_episodes(racine, livres=None):
-    eps = []
-    dossiers = sorted((d for d in racine.iterdir()
-                       if d.is_dir() and re.fullmatch(r"S\d+", d.name, re.I)), key=tri_naturel)
-    for d in dossiers:
-        livre = int(d.name[1:])
-        if livres and livre not in livres:
+def list_episodes(root, books=None):
+    episodes = []
+    folders = sorted((d for d in root.iterdir()
+                      if d.is_dir() and re.fullmatch(r"S\d+", d.name, re.I)), key=natural_key)
+    for folder in folders:
+        book = int(folder.name[1:])
+        if books and book not in books:
             continue
-        for rang, f in enumerate(sorted(d.glob("*.mkv"), key=tri_naturel), 1):
-            eps.append(analyser_nom(f, livre, rang))
-    return eps
+        for rank, f in enumerate(sorted(folder.glob("*.mkv"), key=natural_key), 1):
+            episodes.append(parse_name(f, book, rank))
+    return episodes
 
 
-def creer_transcripteur(backend, modele):
-    """Renvoie (fonction(chemin) -> liste de segments, nom_du_moteur)."""
+def make_transcriber(backend, model):
+    """Returns (function(path) -> list of segments, engine name)."""
     if backend == "auto":
         apple_silicon = platform.system() == "Darwin" and platform.machine() == "arm64"
         backend = "mlx" if apple_silicon else "faster"
 
     if backend == "mlx":
         import mlx_whisper
-        repo = modele or "mlx-community/whisper-large-v3-turbo"
+        repo = model or "mlx-community/whisper-large-v3-turbo"
 
-        def run(chemin):
+        def run(path):
             r = mlx_whisper.transcribe(
-                chemin, path_or_hf_repo=repo, language="fr", word_timestamps=True,
+                path, path_or_hf_repo=repo, language="fr", word_timestamps=True,
                 condition_on_previous_text=False)
             return [(s["start"], s["end"], s["text"].strip(),
                      [(w["start"], w["end"], w["word"].strip()) for w in s.get("words", [])])
@@ -74,93 +75,93 @@ def creer_transcripteur(backend, modele):
         return run, f"mlx:{repo}"
 
     from faster_whisper import WhisperModel
-    nom = modele or "large-v3-turbo"
-    m = WhisperModel(nom, device="cpu", compute_type="int8")
+    name = model or "large-v3-turbo"
+    whisper = WhisperModel(name, device="cpu", compute_type="int8")
 
-    def run(chemin):
-        segs, _ = m.transcribe(
-            chemin, language="fr", word_timestamps=True, vad_filter=True,
+    def run(path):
+        segments, _ = whisper.transcribe(
+            path, language="fr", word_timestamps=True, vad_filter=True,
             condition_on_previous_text=False)
         return [(s.start, s.end, s.text.strip(),
                  [(w.start, w.end, w.word.strip()) for w in (s.words or [])])
-                for s in segs]
-    return run, f"faster-whisper:{nom}"
+                for s in segments]
+    return run, f"faster-whisper:{name}"
 
 
-def enregistrer(con, ep, segments, moteur):
-    with con:  # une transaction par épisode : un Ctrl-C ne laisse rien à moitié
+def save(con, episode, segments, engine):
+    with con:  # one transaction per episode: a Ctrl-C never leaves one half written
         con.execute(
             """INSERT INTO episodes(livre, numero, titre, fichier) VALUES (?,?,?,?)
                ON CONFLICT(fichier) DO UPDATE SET
                  livre=excluded.livre, numero=excluded.numero, titre=excluded.titre""",
-            (ep["livre"], ep["numero"], ep["titre"], ep["fichier"]))
-        ep_id = con.execute("SELECT id FROM episodes WHERE fichier=?", (ep["fichier"],)).fetchone()[0]
-        con.execute("DELETE FROM cues WHERE episode_id=?", (ep_id,))
-        for debut, fin, texte, mots in segments:
-            if not texte:
+            (episode["book"], episode["number"], episode["title"], episode["stored"]))
+        episode_id = con.execute("SELECT id FROM episodes WHERE fichier=?", (episode["stored"],)).fetchone()[0]
+        con.execute("DELETE FROM cues WHERE episode_id=?", (episode_id,))
+        for start, end, text, words in segments:
+            if not text:
                 continue
             cue_id = con.execute(
                 "INSERT INTO cues(episode_id, debut, fin, texte) VALUES (?,?,?,?)",
-                (ep_id, debut, fin, texte)).lastrowid
+                (episode_id, start, end, text)).lastrowid
             con.executemany(
                 "INSERT INTO mots(cue_id, idx, debut, fin, mot) VALUES (?,?,?,?,?)",
-                [(cue_id, i, d, f, w) for i, (d, f, w) in enumerate(mots)])
-        duree = segments[-1][1] if segments else None
+                [(cue_id, i, s, e, w) for i, (s, e, w) in enumerate(words)])
+        duration = segments[-1][1] if segments else None
         con.execute(
             "UPDATE episodes SET duree=?, moteur=?, transcrit_le=? WHERE id=?",
-            (duree, moteur, datetime.datetime.now().isoformat(timespec="seconds"), ep_id))
+            (duration, engine, datetime.datetime.now().isoformat(timespec="seconds"), episode_id))
     return len(segments)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("dossier", help="Dossier contenant S01, S02, ...")
-    ap.add_argument("--db", default=str(BASE_DEFAUT))
+    ap.add_argument("folder", metavar="dossier", help="Dossier contenant S01, S02, ...")
+    ap.add_argument("--db", default=str(DEFAULT_DB))
     ap.add_argument("--backend", choices=["auto", "mlx", "faster"], default="auto")
-    ap.add_argument("--modele", help="Modèle Whisper (défaut : large-v3-turbo)")
-    ap.add_argument("--livre", type=int, action="append", help="Limiter à un Livre (répétable)")
-    ap.add_argument("--limite", type=int, help="Nombre max d'épisodes à traiter")
-    ap.add_argument("--refaire", action="store_true", help="Re-transcrire les épisodes déjà faits")
+    ap.add_argument("--modele", metavar="MODELE", dest="model", help="Modèle Whisper (défaut : large-v3-turbo)")
+    ap.add_argument("--livre", metavar="LIVRE", dest="books", type=int, action="append", help="Limiter à un Livre (répétable)")
+    ap.add_argument("--limite", metavar="LIMITE", dest="limit", type=int, help="Nombre max d'épisodes à traiter")
+    ap.add_argument("--refaire", dest="redo", action="store_true", help="Re-transcrire les épisodes déjà faits")
     args = ap.parse_args()
 
-    racine = Path(args.dossier).expanduser()
-    if not racine.is_dir():
-        sys.exit(f"Dossier introuvable : {racine}")
+    root = Path(args.folder).expanduser()
+    if not root.is_dir():
+        sys.exit(f"Dossier introuvable : {root}")
 
     con = connect(args.db)
-    eps = lister_episodes(racine, args.livre)
-    if not eps:
+    episodes = list_episodes(root, args.books)
+    if not episodes:
         sys.exit("Aucun .mkv trouvé dans des sous-dossiers S01, S02, ...")
 
-    deja = {r[0] for r in con.execute("SELECT fichier FROM episodes WHERE transcrit_le IS NOT NULL")}
-    a_faire = [e for e in eps if args.refaire or e["fichier"] not in deja]
-    if args.limite:
-        a_faire = a_faire[:args.limite]
-    nb_faits = sum(e["fichier"] in deja for e in eps)
-    print(f"{len(eps)} épisodes trouvés, {nb_faits} déjà transcrits, {len(a_faire)} à traiter.")
-    if not a_faire:
+    done = {r[0] for r in con.execute("SELECT fichier FROM episodes WHERE transcrit_le IS NOT NULL")}
+    todo = [e for e in episodes if args.redo or e["stored"] not in done]
+    if args.limit:
+        todo = todo[:args.limit]
+    done_count = sum(e["stored"] in done for e in episodes)
+    print(f"{len(episodes)} épisodes trouvés, {done_count} déjà transcrits, {len(todo)} à traiter.")
+    if not todo:
         return
 
     print("Chargement du modèle Whisper (le 1er lancement le télécharge, ~1,5 Go)…")
-    transcrire, moteur = creer_transcripteur(args.backend, args.modele)
-    print(f"Moteur : {moteur}\n")
+    transcribe, engine = make_transcriber(args.backend, args.model)
+    print(f"Moteur : {engine}\n")
 
     t0 = time.time()
-    for i, ep in enumerate(a_faire, 1):
-        nom = f"Livre {ep['livre']} – ép. {ep['numero']}" + (f" · {ep['titre']}" if ep["titre"] else "")
-        print(f"[{i}/{len(a_faire)}] {nom} … ", end="", flush=True)
+    for i, episode in enumerate(todo, 1):
+        name = f"Livre {episode['book']} – ép. {episode['number']}" + (f" · {episode['title']}" if episode["title"] else "")
+        print(f"[{i}/{len(todo)}] {name} … ", end="", flush=True)
         t = time.time()
         try:
-            n = enregistrer(con, ep, transcrire(ep["chemin"]), moteur)
+            n = save(con, episode, transcribe(episode["path"]), engine)
         except KeyboardInterrupt:
             print("\nInterrompu. Relance la même commande pour reprendre.")
             return
-        except Exception as e:  # un fichier corrompu ne bloque pas le reste
+        except Exception as e:  # a corrupted file does not stop the others
             print(f"ERREUR : {e}")
             continue
-        ecoule = time.time() - t0
-        restant = ecoule / i * (len(a_faire) - i)
-        print(f"{n} répliques en {time.time() - t:.0f}s  (reste ~{restant / 60:.0f} min)")
+        elapsed = time.time() - t0
+        remaining = elapsed / i * (len(todo) - i)
+        print(f"{n} répliques en {time.time() - t:.0f}s  (reste ~{remaining / 60:.0f} min)")
 
     total = con.execute("SELECT COUNT(*) FROM cues").fetchone()[0]
     print(f"\nTerminé. {total} répliques dans {args.db}.")

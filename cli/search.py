@@ -2,8 +2,8 @@
 """Recherche une réplique dans la base.
 
 Usage :
-  python search.py "c'est pas faux"        # liste les résultats, numérotés
-  python search.py "c'est pas faux" -o 2   # ouvre le résultat n° 2 au bon moment
+  python cli/search.py "c'est pas faux"        # liste les résultats, numérotés
+  python cli/search.py "c'est pas faux" -o 2   # ouvre le résultat n° 2 au bon moment
 """
 import argparse
 import shutil
@@ -11,69 +11,70 @@ import subprocess
 import sys
 from pathlib import Path
 
-from db import BASE_DEFAUT, chemin_video, connect, rechercher
+from db import DEFAULT_DB, connect, search, video_path
 
-ROMAINS = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI"}
-GRIS, GRAS, FIN = "\033[90m", "\033[1m", "\033[0m"
+ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI"}
+GREY, BOLD, RESET = "\033[90m", "\033[1m", "\033[0m"
 VLC = "/Applications/VLC.app/Contents/MacOS/VLC"
-MARGE = 1.0  # secondes de lecture avant la réplique (les temps de Whisper sont approximatifs)
+LEAD_IN = 1.0  # seconds played before the cue (Whisper timestamps are approximate)
 
 
-def tc(s):
-    m, s = divmod(s, 60)
-    return f"{int(m):02d}:{s:04.1f}"
+def timecode(seconds):
+    minutes, seconds = divmod(round(seconds, 1), 60)  # rounded first: 59.96 s gives 01:00.0, not 00:60.0
+    return f"{int(minutes):02d}:{seconds:04.1f}"
 
 
-def commande_lecteur(fichier, debut):
-    """Renvoie la commande qui lit `fichier` à partir de `debut` secondes, ou None sans lecteur."""
+def player_command(path, start):
+    """Command that plays `path` from `start` seconds, or None when no player is installed."""
     if Path(VLC).exists():
-        return [VLC, f"--start-time={debut}", fichier]
+        return [VLC, f"--start-time={start}", path]
     if shutil.which("ffplay"):
-        return ["ffplay", "-loglevel", "error", "-ss", str(debut), fichier]
+        return ["ffplay", "-loglevel", "error", "-ss", str(start), path]
     return None
 
 
-def ouvrir(r):
-    video = chemin_video(r["fichier"])
+def open_result(result):
+    video = video_path(result["fichier"])
     if not video.is_file():
         sys.exit(f"Fichier introuvable : {video}")
-    debut = max(0.0, r["debut"] - MARGE)
-    commande = commande_lecteur(str(video), debut)
-    if commande is None:
+    start = max(0.0, result["debut"] - LEAD_IN)
+    command = player_command(str(video), start)
+    if command is None:
         sys.exit("Aucun lecteur trouvé : installe VLC ou ffmpeg (ffplay).")
-    print(f"Ouverture à {tc(debut)} : {video}")
-    # Lecteur détaché : le terminal reste disponible et peut être fermé
-    subprocess.Popen(commande, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+    print(f"Ouverture à {timecode(start)} : {video}")
+    # Detached player: the terminal stays usable and can be closed
+    subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("requete")
-    ap.add_argument("--db", default=str(BASE_DEFAUT))
-    ap.add_argument("-n", type=int, default=15)
-    ap.add_argument("-o", "--ouvrir", type=int, metavar="N", help="Ouvre le résultat n° N dans le lecteur vidéo")
+    ap.add_argument("query", metavar="requete")
+    ap.add_argument("--db", default=str(DEFAULT_DB))
+    ap.add_argument("-n", metavar="N", dest="limit", type=int, default=15)
+    ap.add_argument("-o", "--ouvrir", dest="open", type=int, metavar="N",
+                    help="Ouvre le résultat n° N dans le lecteur vidéo")
     args = ap.parse_args()
 
-    res = rechercher(connect(args.db), args.requete, max(args.n, args.ouvrir or 0))
-    if not res:
+    results = search(connect(args.db), args.query, max(args.limit, args.open or 0))
+    if not results:
         print("Aucun résultat.")
         return
-    for i, r in enumerate(res, 1):
-        titre = f" · {r['titre']}" if r["titre"] else ""
-        print(f"{GRAS}[{i}] Livre {ROMAINS.get(r['livre'], r['livre'])} – ép. {r['numero']}{titre}{FIN}"
-              f"  {tc(r['debut'])} → {tc(r['fin'])}")
-        for t in r["avant"]:
-            print(f"   {GRIS}{t}{FIN}")
+    for i, r in enumerate(results, 1):
+        title = f" · {r['titre']}" if r["titre"] else ""
+        print(f"{BOLD}[{i}] Livre {ROMAN.get(r['livre'], r['livre'])} – ép. {r['numero']}{title}{RESET}"
+              f"  {timecode(r['debut'])} → {timecode(r['fin'])}")
+        for text in r["before"]:
+            print(f"   {GREY}{text}{RESET}")
         print(f" ▶ {r['texte']}")
-        for t in r["apres"]:
-            print(f"   {GRIS}{t}{FIN}")
+        for text in r["after"]:
+            print(f"   {GREY}{text}{RESET}")
         print()
 
-    if args.ouvrir is not None:
-        if not 1 <= args.ouvrir <= len(res):
-            sys.exit(f"Pas de résultat n° {args.ouvrir} : {len(res)} résultat(s) seulement.")
-        ouvrir(res[args.ouvrir - 1])
+    if args.open is not None:
+        if not 1 <= args.open <= len(results):
+            sys.exit(f"Pas de résultat n° {args.open} : {len(results)} résultat(s) seulement.")
+        open_result(results[args.open - 1])
 
 
 if __name__ == "__main__":

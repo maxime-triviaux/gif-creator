@@ -2,10 +2,10 @@
 """Exporte en GIF le passage d'une réplique, avec le texte incrusté en bas de l'image.
 
 Usage :
-  python gif.py "c'est pas faux"                 # menu ↑/↓ s'il y a plusieurs résultats
-  python gif.py "c'est pas faux" -r 2            # exporte directement le 2e résultat
-  python gif.py "c'est pas faux" --apres 1.5     # prolonge après la réplique
-  python gif.py "c'est pas faux" --texte "C'est pas faux." -o faux.gif
+  python cli/gif.py "c'est pas faux"                 # menu ↑/↓ s'il y a plusieurs résultats
+  python cli/gif.py "c'est pas faux" -r 2            # exporte directement le 2e résultat
+  python cli/gif.py "c'est pas faux" --apres 1.5     # prolonge après la réplique
+  python cli/gif.py "c'est pas faux" --texte "C'est pas faux." -o faux.gif
 """
 import argparse
 import os
@@ -22,218 +22,221 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from db import BASE_DEFAUT, chemin_video, connect, rechercher
-from search import FIN, GRAS, GRIS, tc
+from db import DEFAULT_DB, connect, search, video_path
+from search import BOLD, GREY, RESET, timecode
 
-POLICES = ["/System/Library/Fonts/Supplemental/Impact.ttf",
-           "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-           "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]  # Linux (image Docker de l'API)
-MAX_LIGNES = 3
-DOSSIER_SORTIE = "output"
-ECHAP = b"\033"
-
-
-def charger_police(taille):
-    for chemin in POLICES:
-        if Path(chemin).is_file():
-            return ImageFont.truetype(chemin, taille)
-    return ImageFont.load_default(taille)
+FONTS = ["/System/Library/Fonts/Supplemental/Impact.ttf",
+         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]  # Linux (the API's Docker image)
+MAX_LINES = 3
+OUTPUT_DIR = "output"
+ESC = b"\033"
 
 
-def couper_lignes(texte, police, largeur_max):
-    lignes, ligne = [], ""
-    for mot in texte.split():
-        essai = f"{ligne} {mot}".strip()
-        if ligne and police.getlength(essai) > largeur_max:
-            lignes.append(ligne)
-            ligne = mot
+def load_font(size):
+    for path in FONTS:
+        if Path(path).is_file():
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default(size)
+
+
+def wrap_lines(text, font, max_width):
+    lines, line = [], ""
+    for word in text.split():
+        attempt = f"{line} {word}".strip()
+        if line and font.getlength(attempt) > max_width:
+            lines.append(line)
+            line = word
         else:
-            ligne = essai
-    return lignes + [ligne] if ligne else lignes
+            line = attempt
+    return lines + [line] if line else lines
 
 
-def dessiner_texte(texte, largeur, chemin):
-    """Écrit un PNG transparent : texte blanc centré, contour noir, en style mème."""
-    taille = largeur // 13
-    while True:  # réduit la police jusqu'à tenir dans la largeur et sur MAX_LIGNES lignes
-        police = charger_police(taille)
-        contour = max(2, taille // 12)
-        largeur_utile = largeur * 0.94 - 2 * contour
-        lignes = couper_lignes(texte, police, largeur_utile)
-        tient = len(lignes) <= MAX_LIGNES and all(police.getlength(l) <= largeur_utile for l in lignes)
-        if tient or taille <= largeur // 30:
+def draw_caption(text, width, path):
+    """Writes a transparent PNG: centred white text with a black outline, meme style."""
+    size = width // 13
+    while True:  # shrink the font until the text fits the width and MAX_LINES lines
+        font = load_font(size)
+        outline = max(2, size // 12)
+        usable_width = width * 0.94 - 2 * outline
+        lines = wrap_lines(text, font, usable_width)
+        fits = len(lines) <= MAX_LINES and all(font.getlength(l) <= usable_width for l in lines)
+        if fits or size <= width // 30:
             break
-        taille -= 1
+        size -= 1
 
-    options = dict(font=police, anchor="ma", align="center", spacing=taille // 6, stroke_width=contour)
-    texte_coupe = "\n".join(lignes)
-    mesure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    _, haut, _, bas = mesure.multiline_textbbox((largeur / 2, 0), texte_coupe, **options)
-    image = Image.new("RGBA", (largeur, bas - haut), (0, 0, 0, 0))
-    ImageDraw.Draw(image).multiline_text((largeur / 2, -haut), texte_coupe, fill="white",
+    options = dict(font=font, anchor="ma", align="center", spacing=size // 6, stroke_width=outline)
+    wrapped = "\n".join(lines)
+    measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    _, top, _, bottom = measure.multiline_textbbox((width / 2, 0), wrapped, **options)
+    image = Image.new("RGBA", (width, bottom - top), (0, 0, 0, 0))
+    ImageDraw.Draw(image).multiline_text((width / 2, -top), wrapped, fill="white",
                                          stroke_fill="black", **options)
-    image.save(chemin)
+    image.save(path)
 
 
-def nom_par_defaut(r, texte):
-    ascii_ = unicodedata.normalize("NFKD", texte).encode("ascii", "ignore").decode().lower()
-    extrait = re.sub(r"[^a-z0-9]+", "-", ascii_).strip("-")[:40].strip("-")
-    return f"L{r['livre']}E{r['numero']:03d}_{int(r['debut'])}s_{extrait or 'replique'}.gif"
+def default_name(result, text):
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    excerpt = re.sub(r"[^a-z0-9]+", "-", ascii_text).strip("-")[:40].strip("-")
+    return f"L{result['livre']}E{result['numero']:03d}_{int(result['debut'])}s_{excerpt or 'replique'}.gif"
 
 
-def exporter(fichier, debut, duree, calque, largeur, fps, sortie, delai=None):
-    """Lance ffmpeg ; `delai` (secondes) l'interrompt avec subprocess.TimeoutExpired."""
-    filtres = (
-        f"[0:v]fps={fps},scale=iw*sar:ih,setsar=1,scale={largeur}:-2:flags=lanczos,setsar=1[video];"
+def export_gif(video, start, duration, overlay, width, fps, output, timeout=None):
+    """Runs ffmpeg; `timeout` (seconds) stops it with subprocess.TimeoutExpired."""
+    filters = (
+        f"[0:v]fps={fps},scale=iw*sar:ih,setsar=1,scale={width}:-2:flags=lanczos,setsar=1[video];"
         "[video][1:v]overlay=(W-w)/2:H-h-H*0.04,split[a][b];"
         "[a]palettegen=reserve_transparent=0[palette];"
         "[b][palette]paletteuse=dither=bayer:bayer_scale=4"
     )
     subprocess.run(
-        ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", str(debut), "-t", str(duree), "-i", fichier,
-         "-i", calque, "-filter_complex", filtres, "-loop", "0", sortie],
-        check=True, timeout=delai)
+        ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", video,
+         "-i", overlay, "-filter_complex", filters, "-loop", "0", output],
+        check=True, timeout=timeout)
 
 
-def copier_presse_papier(chemin):
-    """Copie le GIF sous deux formes : le fichier et ses données, car selon l'application
-    qui reçoit le collage, seule l'une des deux est acceptée."""
-    # Pas de « set the clipboard to POSIX file » : il vide le presse-papier sans signaler d'erreur
+def copy_to_clipboard(path):
+    """Copies the GIF in two forms, the file and its data: depending on the application
+    receiving the paste, only one of them is accepted."""
+    # No "set the clipboard to POSIX file": it empties the clipboard without reporting an error
     script = """
 ObjC.import('AppKit');
 function run(argv) {
   const pb = $.NSPasteboard.generalPasteboard;
-  const donnees = $.NSData.dataWithContentsOfFile(argv[0]);
-  if (donnees.isNil()) return 'echec';
+  const data = $.NSData.dataWithContentsOfFile(argv[0]);
+  if (data.isNil()) return 'failed';
   pb.clearContents;
-  if (!pb.writeObjects($.NSArray.arrayWithObject($.NSURL.fileURLWithPath(argv[0])))) return 'echec';
-  return pb.setDataForType(donnees, 'com.compuserve.gif') ? 'ok' : 'echec';
+  if (!pb.writeObjects($.NSArray.arrayWithObject($.NSURL.fileURLWithPath(argv[0])))) return 'failed';
+  return pb.setDataForType(data, 'com.compuserve.gif') ? 'ok' : 'failed';
 }"""
-    commande = ["osascript", "-l", "JavaScript", "-e", script, str(chemin.resolve())]
+    command = ["osascript", "-l", "JavaScript", "-e", script, str(path.resolve())]
     try:
-        return subprocess.run(commande, capture_output=True, text=True).stdout.strip() == "ok"
+        return subprocess.run(command, capture_output=True, text=True).stdout.strip() == "ok"
     except OSError:
         return False
 
 
-def couper_ecran(texte, largeur):
-    return texte if len(texte) <= largeur else texte[:max(0, largeur - 1)] + "…"
+def truncate(text, width):
+    return text if len(text) <= width else text[:max(0, width - 1)] + "…"
 
 
-def lire_touche(fd):
-    """Lit une touche ; une flèche arrive sous forme d'une séquence comme ESC [ A."""
-    touche = os.read(fd, 1)
-    if touche != ECHAP or not select.select([fd], [], [], 0.05)[0]:
-        return touche  # select vide : Échap seul, sans séquence derrière
-    touche += os.read(fd, 1)
-    if touche[1:] not in (b"[", b"O"):
-        return touche
+def read_key(fd):
+    """Reads one key; an arrow arrives as a sequence such as ESC [ A."""
+    key = os.read(fd, 1)
+    if key != ESC or not select.select([fd], [], [], 0.05)[0]:
+        return key  # nothing follows: Escape on its own
+    key += os.read(fd, 1)
+    if key[1:] not in (b"[", b"O"):
+        return key
     while True:
-        suite = os.read(fd, 1)
-        touche += suite
-        if not suite or 0x40 <= suite[0] <= 0x7e:
-            return touche
+        rest = os.read(fd, 1)
+        key += rest
+        if not rest or 0x40 <= rest[0] <= 0x7e:
+            return key
 
 
-def choisir(lignes):
-    """Menu ↑/↓ dans le terminal. Renvoie le numéro choisi (dès 1), ou None si annulé."""
+def choose(lines):
+    """↑/↓ menu in the terminal. Returns the chosen number (from 1), or None if cancelled."""
     fd = sys.stdin.fileno()
-    reglages = termios.tcgetattr(fd)
-    choix, haut, dessinees = 0, 0, 0
-    ecrire = sys.stdout.write
-    ecrire("\033[?25l")  # cache le curseur
+    saved = termios.tcgetattr(fd)
+    selected, top, drawn = 0, 0, 0
+    write = sys.stdout.write
+    write("\033[?25l")  # hide the cursor
     try:
         tty.setcbreak(fd)
         while True:
-            # Une ligne ne doit jamais déborder : le redessin compte les lignes affichées
-            colonnes, rangees = shutil.get_terminal_size()
-            visibles = max(1, min(len(lignes), rangees - 2))
-            haut = min(max(haut, choix - visibles + 1), choix, len(lignes) - visibles)
-            titre = f"Réplique à exporter ({choix + 1}/{len(lignes)}) · ↑/↓ choisir · Entrée valider · q annuler"
-            ecran = [GRIS + couper_ecran(titre, colonnes - 1) + FIN]
-            for i in range(haut, haut + visibles):
-                texte = couper_ecran(lignes[i], colonnes - 3)
-                ecran.append(f"{GRAS}❯ {texte}{FIN}" if i == choix else f"  {texte}")
-            if dessinees > 1:
-                ecrire(f"\033[{dessinees - 1}A")
-            ecrire("\r\033[J" + "\n".join(ecran))
+            # A line must never wrap: redrawing relies on the number of lines displayed
+            columns, rows = shutil.get_terminal_size()
+            visible = max(1, min(len(lines), rows - 2))
+            top = min(max(top, selected - visible + 1), selected, len(lines) - visible)
+            title = f"Réplique à exporter ({selected + 1}/{len(lines)}) · ↑/↓ choisir · Entrée valider · q annuler"
+            screen = [GREY + truncate(title, columns - 1) + RESET]
+            for i in range(top, top + visible):
+                text = truncate(lines[i], columns - 3)
+                screen.append(f"{BOLD}❯ {text}{RESET}" if i == selected else f"  {text}")
+            if drawn > 1:
+                write(f"\033[{drawn - 1}A")
+            write("\r\033[J" + "\n".join(screen))
             sys.stdout.flush()
-            dessinees = len(ecran)
+            drawn = len(screen)
 
-            touche = lire_touche(fd)
-            if touche in (b"\033[A", b"\033OA"):
-                choix = (choix - 1) % len(lignes)
-            elif touche in (b"\033[B", b"\033OB"):
-                choix = (choix + 1) % len(lignes)
-            elif touche in (b"\r", b"\n"):
-                return choix + 1
-            elif touche in (b"q", b"Q", ECHAP, b"\x04", b""):
+            key = read_key(fd)
+            if key in (b"\033[A", b"\033OA"):
+                selected = (selected - 1) % len(lines)
+            elif key in (b"\033[B", b"\033OB"):
+                selected = (selected + 1) % len(lines)
+            elif key in (b"\r", b"\n"):
+                return selected + 1
+            elif key in (b"q", b"Q", ESC, b"\x04", b""):
                 return None
     except KeyboardInterrupt:
         return None
-    finally:  # le terminal doit retrouver son état normal, quoi qu'il arrive
-        if dessinees > 1:
-            ecrire(f"\033[{dessinees - 1}A")
-        ecrire("\r\033[J\033[?25h")
+    finally:  # always give the terminal back its normal state
+        if drawn > 1:
+            write(f"\033[{drawn - 1}A")
+        write("\r\033[J\033[?25h")
         sys.stdout.flush()
-        termios.tcsetattr(fd, termios.TCSADRAIN, reglages)
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("requete", help="Réplique à chercher")
-    ap.add_argument("-r", "--resultat", type=int, metavar="N", help="N° du résultat à exporter, sans poser la question")
-    ap.add_argument("-n", type=int, default=15, help="Nombre max de résultats proposés (défaut : 15)")
-    ap.add_argument("-o", "--sortie", help="Nom du GIF, placé dans output/ (écrasé s'il existe)")
-    ap.add_argument("--texte", help="Texte à afficher à la place de la réplique transcrite")
-    ap.add_argument("--avant", type=float, default=0.2, help="Secondes gardées avant la réplique (défaut : 0.2)")
-    ap.add_argument("--apres", type=float, default=0.4, help="Secondes gardées après la réplique (défaut : 0.4)")
-    ap.add_argument("--largeur", type=int, default=480, help="Largeur du GIF en pixels (défaut : 480)")
+    ap.add_argument("query", metavar="requete", help="Réplique à chercher")
+    ap.add_argument("-r", "--resultat", dest="result", type=int, metavar="N",
+                    help="N° du résultat à exporter, sans poser la question")
+    ap.add_argument("-n", metavar="N", dest="limit", type=int, default=15, help="Nombre max de résultats proposés (défaut : 15)")
+    ap.add_argument("-o", "--sortie", metavar="SORTIE", dest="output", help="Nom du GIF, placé dans output/ (écrasé s'il existe)")
+    ap.add_argument("--texte", metavar="TEXTE", dest="text", help="Texte à afficher à la place de la réplique transcrite")
+    ap.add_argument("--avant", metavar="AVANT", dest="before", type=float, default=0.2,
+                    help="Secondes gardées avant la réplique (défaut : 0.2)")
+    ap.add_argument("--apres", metavar="APRES", dest="after", type=float, default=0.4,
+                    help="Secondes gardées après la réplique (défaut : 0.4)")
+    ap.add_argument("--largeur", metavar="LARGEUR", dest="width", type=int, default=480, help="Largeur du GIF en pixels (défaut : 480)")
     ap.add_argument("--fps", type=int, default=12, help="Images par seconde (défaut : 12)")
-    ap.add_argument("--db", default=str(BASE_DEFAUT))
+    ap.add_argument("--db", default=str(DEFAULT_DB))
     args = ap.parse_args()
 
-    res = rechercher(connect(args.db), args.requete, max(args.n, args.resultat or 0))
-    if not res:
+    results = search(connect(args.db), args.query, max(args.limit, args.result or 0))
+    if not results:
         sys.exit("Aucun résultat.")
-    lignes = [f"Livre {r['livre']} – ép. {r['numero']}  {tc(r['debut'])}  {r['texte']}" for r in res]
+    lines = [f"Livre {r['livre']} – ép. {r['numero']}  {timecode(r['debut'])}  {r['texte']}" for r in results]
 
-    numero = args.resultat
-    if numero is None and len(res) == 1:
-        numero = 1
-    elif numero is None and sys.stdin.isatty() and sys.stdout.isatty():
-        numero = choisir(lignes)
-        if numero is None:
+    number = args.result
+    if number is None and len(results) == 1:
+        number = 1
+    elif number is None and sys.stdin.isatty() and sys.stdout.isatty():
+        number = choose(lines)
+        if number is None:
             print("Annulé.")
             return
-    elif numero is None:
-        print("\n".join(f"[{i}] {l}" for i, l in enumerate(lignes, 1)))
+    elif number is None:
+        print("\n".join(f"[{i}] {l}" for i, l in enumerate(lines, 1)))
         sys.exit("Plusieurs résultats : précise lequel exporter avec -r N.")
-    if not 1 <= numero <= len(res):
-        sys.exit(f"Pas de résultat n° {numero} : {len(res)} résultat(s) seulement.")
-    print(f"▶ {lignes[numero - 1]}")
+    if not 1 <= number <= len(results):
+        sys.exit(f"Pas de résultat n° {number} : {len(results)} résultat(s) seulement.")
+    print(f"▶ {lines[number - 1]}")
 
-    r = res[numero - 1]
-    video = chemin_video(r["fichier"])
+    r = results[number - 1]
+    video = video_path(r["fichier"])
     if not video.is_file():
         sys.exit(f"Fichier introuvable : {video}")
-    texte = args.texte or r["texte"]
-    debut = max(0.0, r["debut"] - args.avant)
-    duree = r["fin"] + args.apres - debut
-    sortie = Path(DOSSIER_SORTIE) / (args.sortie or nom_par_defaut(r, texte))  # un chemin absolu reste tel quel
-    sortie.parent.mkdir(parents=True, exist_ok=True)
+    text = args.text or r["texte"]
+    start = max(0.0, r["debut"] - args.before)
+    duration = r["fin"] + args.after - start
+    output = Path(OUTPUT_DIR) / (args.output or default_name(r, text))  # an absolute path is kept as is
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory() as dossier:
-        calque = str(Path(dossier) / "texte.png")
-        dessiner_texte(texte, args.largeur, calque)
+    with tempfile.TemporaryDirectory() as tmp:
+        overlay = str(Path(tmp) / "caption.png")
+        draw_caption(text, args.width, overlay)
         try:
-            exporter(str(video), debut, duree, calque, args.largeur, args.fps, str(sortie))
+            export_gif(str(video), start, duration, overlay, args.width, args.fps, str(output))
         except subprocess.CalledProcessError:
             sys.exit("Échec de ffmpeg (message ci-dessus).")
-    taille = sortie.stat().st_size / 1e6
-    print(f"\nGIF écrit : {sortie}  ({duree:.1f} s, {taille:.1f} Mo)")
-    # Le GIF est déjà écrit : un échec de copie n'est pas une erreur d'export
-    print("Copié dans le presse-papier." if copier_presse_papier(sortie)
+    size = output.stat().st_size / 1e6
+    print(f"\nGIF écrit : {output}  ({duration:.1f} s, {size:.1f} Mo)")
+    # The GIF is already written: a failed copy is not an export error
+    print("Copié dans le presse-papier." if copy_to_clipboard(output)
           else "Copie dans le presse-papier impossible.")
 
 

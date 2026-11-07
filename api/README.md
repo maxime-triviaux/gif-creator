@@ -137,7 +137,7 @@ docker --context vps-perso compose --env-file api/.env -f api/docker-compose.yml
 
 La base repère chaque vidéo par son chemin dans `data/` (`Kaamelott/S01/001    Heat.mkv`), et
 l'API le cherche au même endroit dans `HOST_MEDIA_DIR`. Une vidéo transcrite hors de `data/`
-(avec `cli/transcrire.py`) garde un chemin absolu et ne peut pas être servie.
+(avec `cli/transcribe.py`) garde un chemin absolu et ne peut pas être servie.
 
 ### Accès
 
@@ -194,7 +194,7 @@ docker --context vps-perso logs kaamelott-gif-api-1 2>&1 | grep 'alice :'
 
 - **Nouvelle base :** étape 3, sans redémarrage.
 - **Nouveau code :** push sur `main`, le workflow redéploie.
-- **Rendu modifié** (police, filtres) : incrémente `VERSION_RENDU` dans `api/app.py`, sinon le
+- **Rendu modifié** (police, filtres) : incrémente `RENDER_VERSION` dans `api/app.py`, sinon le
   cache continue de servir les anciens GIF.
 
 ## Cache
