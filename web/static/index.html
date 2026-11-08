@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Kaamelott GIF</title>
+  <meta name="description" content="Cherche une réplique de Kaamelott et partage-la en GIF.">
+  <meta name="theme-color" content="#5c161a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Kaamelott">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <img class="bar-icon" src="icon-192.png" alt="" width="28" height="28">
+    <h1>Kaamelott GIF</h1>
+    <button id="change-key" class="link" type="button" hidden>Clé</button>
+  </header>
+
+  <!-- First launch: the key is typed here and stays on this device -->
+  <main id="key-screen" class="screen" hidden>
+    <p id="install-hint" class="note" hidden>
+      Pour l'installer, ouvre le menu <strong>Partager</strong> de Safari, puis
+      <strong>Sur l'écran d'accueil</strong>. Saisis ensuite la clé dans l'app installée :
+      elle ne voit pas ce que tu tapes dans Safari.
+    </p>
+    <form id="key-form" class="key-form" autocomplete="off">
+      <label for="key-input">Clé d'API</label>
+      <input id="key-input" type="password" required autocapitalize="none" autocorrect="off"
+             spellcheck="false" enterkeyhint="done" placeholder="Colle la clé qu'on t'a donnée">
+      <button type="submit" class="primary">Enregistrer</button>
+      <p id="key-status" class="status" role="status"></p>
+    </form>
+    <p class="note">
+      La clé reste sur cet appareil : elle n'est envoyée qu'à l'API, avec chaque recherche.
+      Elle est personnelle, et chaque requête est enregistrée à ton nom : ne la partage pas.
+    </p>
+    <button id="cancel-key" class="link" type="button" hidden>Annuler</button>
+  </main>
+
+  <main id="search-screen" class="screen" hidden>
+    <form id="search-form" class="search" role="search">
+      <input id="search-input" type="search" required maxlength="200" enterkeyhint="search"
+             autocomplete="off" autocapitalize="none" placeholder="« C'est pas faux »"
+             aria-label="Réplique à chercher">
+      <button type="submit" class="primary">Chercher</button>
+    </form>
+    <p id="search-status" class="status" role="status"></p>
+    <ul id="results" class="grid"></ul>
+  </main>
+
+  <dialog id="detail">
+    <form method="dialog" class="detail-close">
+      <button class="link" aria-label="Fermer">Fermer</button>
+    </form>
+    <div class="detail-gif">
+      <img id="detail-img" alt="">
+      <p id="detail-loading" class="loading">Génération du GIF…</p>
+    </div>
+    <p id="detail-meta" class="meta"></p>
+    <div class="actions">
+      <button id="share" class="primary" type="button" disabled>Partager</button>
+      <a id="download" class="button primary" hidden>Télécharger</a>
+    </div>
+    <p id="detail-status" class="status" role="status"></p>
+    <details>
+      <summary>Modifier le texte ou le passage</summary>
+      <form id="settings" class="settings">
+        <label>Texte
+          <textarea id="opt-text" rows="2" maxlength="200"></textarea>
+        </label>
+        <div class="row">
+          <label>Avant (s)
+            <input id="opt-before" type="number" inputmode="decimal" min="0" max="5" step="0.1">
+          </label>
+          <label>Après (s)
+            <input id="opt-after" type="number" inputmode="decimal" min="0" max="5" step="0.1">
+          </label>
+        </div>
+        <button type="submit">Regénérer</button>
+      </form>
+    </details>
+  </dialog>
+</body>
+</html>
