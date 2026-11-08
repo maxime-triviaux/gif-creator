@@ -1,0 +1,114 @@
+name: Deploy web
+
+# Vérifie l'app web à chaque pull request, et la déploie sur le VPS à chaque push sur main.
+# Même principe que l'API : docker compose pilote le Docker du VPS par SSH, et son Traefik la
+# publie sous https://API_DOMAIN/app/. L'API n'est ni reconstruite ni redémarrée.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-web.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Valider les fichiers compose
+        env:
+          API_DOMAIN: exemple.invalid
+        run: |
+          docker compose -f web/docker-compose.yml -f web/docker-compose.traefik.yml config --quiet
+          docker compose -f web/docker-compose.yml -f web/docker-compose.dev.yml config --quiet
+
+      - name: Vérifier la syntaxe du JavaScript
+        run: |
+          node --check web/static/app.js
+          node --check web/static/sw.js
+          node -e 'JSON.parse(require("fs").readFileSync("web/static/manifest.webmanifest"))'
+
+      - name: Construire l'image
+        run: docker build -t kaamelott-gif-web:ci web
+
+      # Lancé comme sur le serveur : système de fichiers en lecture seule
+      - name: Tester le service
+        run: |
+          docker run -d --name web-ci --read-only --tmpfs /tmp --tmpfs /var/cache/nginx -p 8080:8080 kaamelott-gif-web:ci
+          for i in $(seq 1 15); do curl -s -o /dev/null localhost:8080/app/ && break; sleep 1; done
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code localhost:8080/app/)" = 200
+          test "$(code localhost:8080/app/app.js)" = 200
+          test "$(code localhost:8080/app/sw.js)" = 200
+          test "$(code localhost:8080/app/manifest.webmanifest)" = 200
+          test "$(code localhost:8080/app/apple-touch-icon.png)" = 200
+          test "$(code localhost:8080/)" = 404
+          # Redirection relative : derrière Traefik, une adresse absolue pointerait vers le port 8080
+          curl -sI localhost:8080/app | grep -qi '^location: /app/'
+          curl -sI localhost:8080/app/ | grep -qi "^content-security-policy: default-src 'self'"
+          curl -sI localhost:8080/app/manifest.webmanifest | grep -qi '^content-type: application/manifest+json'
+          echo "Page, fichiers, redirection et en-têtes : OK"
+
+      - name: Logs du conteneur
+        if: failure()
+        run: docker logs web-ci
+
+  deployer:
+    needs: verifier
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      API_DOMAIN: ${{ vars.API_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurer SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<EOF
+          Host $VPS_HOST
+            User $VPS_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            BatchMode yes
+          EOF
+          ssh "$VPS_USER@$VPS_HOST" docker version --format '{{.Server.Version}}'
+
+      - name: Déployer sur le VPS
+        env:
+          DOCKER_HOST: ssh://${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+        run: |
+          docker compose -f web/docker-compose.yml -f web/docker-compose.traefik.yml up -d --build --remove-orphans
+          docker image prune -f
+
+      # /app doit servir la page, et le reste du domaine toujours l'API (401 sans clé)
+      - name: Vérifier l'app en ligne
+        run: |
+          for i in $(seq 1 12); do
+            page=$(curl -s -w '%{http_code}' "https://$API_DOMAIN/app/" || true)
+            api=$(curl -s -o /dev/null -w '%{http_code}' "https://$API_DOMAIN/repliques?q=graal" || true)
+            if [ "${page: -3}" = 200 ] && printf '%s' "$page" | grep -q '<title>Kaamelott GIF</title>' && [ "$api" = 401 ]; then
+              echo "https://$API_DOMAIN/app/ répond, et l'API aussi"; exit 0
+            fi
+            echo "Tentative $i : page HTTP ${page: -3}, API HTTP $api"; sleep 10
+          done
+          echo "::error::https://$API_DOMAIN/app/ ne répond pas, ou l'API ne répond plus"; exit 1

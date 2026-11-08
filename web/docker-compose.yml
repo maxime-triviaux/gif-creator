@@ -1,0 +1,16 @@
+# Nom de projet distinct de l'API : son déploiement (avec --remove-orphans) ne supprime jamais l'app web
+name: kaamelott-gif-web
+
+services:
+  web:
+    build: .
+    image: kaamelott-gif-web
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+    ports:
+      # Sur le serveur, l'accès public passe par Traefik (docker-compose.traefik.yml) ;
+      # ce port reste limité à la machine elle-même
+      - "${BIND:-127.0.0.1}:${PORT:-8080}:8080"

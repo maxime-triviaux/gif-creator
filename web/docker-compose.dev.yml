@@ -1,0 +1,9 @@
+# Développement : la page sur http://localhost:8080/app/, et l'API de ton poste relayée sur la
+# même adresse (comme Traefik le fait sur le serveur). L'API doit écouter sur 0.0.0.0:8000.
+#   docker compose -f web/docker-compose.yml -f web/docker-compose.dev.yml up --build
+services:
+  web:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./api-proxy.dev.conf:/etc/nginx/api-proxy/dev.conf:ro

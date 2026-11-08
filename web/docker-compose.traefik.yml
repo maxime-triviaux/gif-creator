@@ -1,0 +1,22 @@
+# Publication en HTTPS par le Traefik du serveur, sur le domaine de l'API, sous /app.
+# S'ajoute à docker-compose.yml :
+#   docker compose -f web/docker-compose.yml -f web/docker-compose.traefik.yml up -d --build
+# Traefik envoie /app ici, et tout le reste à l'API (routeur kaamelott-gif, dans api/).
+services:
+  web:
+    networks:
+      - public-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=public-net"
+      - "traefik.http.routers.kaamelott-gif-web.rule=Host(`${API_DOMAIN:?API_DOMAIN manquant (web/.env ou variables GitHub)}`) && (Path(`/app`) || PathPrefix(`/app/`))"
+      # Plus prioritaire que le routeur de l'API, qui prend tout le domaine
+      - "traefik.http.routers.kaamelott-gif-web.priority=100"
+      - "traefik.http.routers.kaamelott-gif-web.entrypoints=websecure"
+      - "traefik.http.routers.kaamelott-gif-web.tls=true"
+      - "traefik.http.routers.kaamelott-gif-web.tls.certresolver=myresolver"
+      - "traefik.http.services.kaamelott-gif-web.loadbalancer.server.port=8080"
+
+networks:
+  public-net:
+    external: true

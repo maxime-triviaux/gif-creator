@@ -134,6 +134,12 @@ Installation et déploiement : [api/README.md](api/README.md).
 qui l'utilisent n'ont besoin ni des vidéos ni de la base, juste de Python 3 et d'une clé dans un
 `.env`. Voir [client/README.md](client/README.md).
 
+## App web (iPhone)
+
+`web/` est une app web installable sur l'écran d'accueil d'un iPhone : recherche, grille de GIF et
+partage par la feuille de partage d'iOS. Chacun y saisit sa clé, qui reste sur son téléphone. Elle
+est servie sous `https://API_DOMAIN/app/`, sans modifier l'API. Voir [web/README.md](web/README.md).
+
 ## Ce qui est stocké (`data/kaamelott.db`)
 
 - `episodes` : Livre, numéro, titre (tiré du nom de fichier `SxxExx - Titre.mkv`), chemin de la

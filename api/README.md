@@ -141,7 +141,8 @@ l'API le cherche au même endroit dans `HOST_MEDIA_DIR`. Une vidéo transcrite h
 
 ### Accès
 
-L'API est publique à l'adresse `https://API_DOMAIN`, protégée par les clés. Le port 8000 n'est
+L'API est publique à l'adresse `https://API_DOMAIN`, protégée par les clés. Seul `/app` y est
+servi par un autre conteneur : l'app web ([web/README.md](../web/README.md)), routée par Traefik. Le port 8000 n'est
 ouvert que sur le VPS lui-même (`BIND=127.0.0.1`), pour le débogage. Ne distribue les clés qu'à
 des proches : l'API diffuse des extraits d'une œuvre protégée.
 
